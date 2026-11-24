@@ -25,7 +25,7 @@ The app loads every task assigned to you, across all projects, and refreshes eve
 
 - **Overview** — counters, quick actions and the tasks that need attention now. **New task** creates a task assigned to you in a project you choose.
 - **Today** — your plan for the day. Add tasks from the suggestions, from Focus or from a task page, tick them off, and what is left is carried over to the next day. Stored on this computer only.
-- **Focus** — one list for all projects, grouped by urgency. Search, filter by project, pinned, untouched or done; export to CSV.
+- **Focus** — one list for all projects, grouped by urgency. Search, filter by project, pinned, untouched or done; export to CSV. Select several tasks with Ctrl or Shift and click **Move to stage** to move them all at once; with tasks of different projects, only the stages those projects have in common are offered.
 - **Calendar** — deadlines on a month grid. Click a task to read it, or "+n more" to list that day in Focus.
 - **Mentions** — messages that tagged you. Tick each one off yourself when you have dealt with it (click its status, or select several and click Mark checked); the list also shows if you already replied. Stored on this computer only.
 - **What changed** — what happened to your tasks since the last time you opened the app.

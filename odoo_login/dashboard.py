@@ -423,7 +423,9 @@ class DashboardView(ActionsMixin, PagesMixin):
         tk.Frame(card.body, bg=theme.BORDER, height=1).pack(fill="x")
         box = ttk.Frame(card.body)
         box.pack(fill="both", expand=True)
-        self.focus_tree = ttk.Treeview(box, columns=("project", "stage", "deadline", "idle"), show="tree headings")
+        self.focus_tree = ttk.Treeview(
+            box, columns=("project", "stage", "deadline", "idle"), show="tree headings", selectmode="extended"
+        )
         self.focus_tree.heading("#0", text="TASK", anchor="w")
         self.focus_tree.heading("project", text="PROJECT", anchor="w")
         self.focus_tree.heading("stage", text="STAGE", anchor="w")
@@ -502,6 +504,8 @@ class DashboardView(ActionsMixin, PagesMixin):
         self.today_button.grid(row=0, column=1, sticky="ew", padx=(2, 2))
         self.open_button = PillButton(row, "Odoo", self.open_selected_task, kind="secondary", width=10)
         self.open_button.grid(row=0, column=2, sticky="ew", padx=(4, 0))
+        self.move_button = PillButton(body, "Move to stage", self.move_selected_clicked, kind="secondary")
+        self.move_button.pack(fill="x", pady=(8, 0))
         self._show_detail()
 
     # Changes page -------------------------------------------------------
@@ -775,7 +779,7 @@ class DashboardView(ActionsMixin, PagesMixin):
 
     def render_focus(self):
         today = self._today()
-        selected = self.selected_task_id()
+        selected = [str(task_id) for task_id in self.selected_task_ids()]
         tree = self.focus_tree
         tree.delete(*tree.get_children())
         groups = {key: [] for key, _label in insights.BUCKETS}
@@ -811,8 +815,9 @@ class DashboardView(ActionsMixin, PagesMixin):
                     ),
                     tags=(key,) if key in ("overdue", "today", "done") else (),
                 )
-        if selected is not None and tree.exists(str(selected)):
-            tree.selection_set(str(selected))
+        selected = [iid for iid in selected if tree.exists(iid)]
+        if selected:
+            tree.selection_set(selected)
         else:
             self._show_detail()
 
@@ -843,20 +848,43 @@ class DashboardView(ActionsMixin, PagesMixin):
 
     # Task detail, pins, notes -------------------------------------------
 
+    def selected_task_ids(self):
+        """Every task selected in Focus (group headers are ignored)."""
+        return [int(iid) for iid in self.focus_tree.selection() if not iid.startswith("g:")]
+
     def selected_task_id(self):
-        selection = self.focus_tree.selection()
-        if not selection or selection[0].startswith("g:"):
-            return None
-        return int(selection[0])
+        """The selected task when exactly one is selected."""
+        ids = self.selected_task_ids()
+        return ids[0] if len(ids) == 1 else None
 
     def _task(self, task_id):
         return next((task for task in self.tasks if task.id == task_id), None)
 
     def _show_detail(self):
         self._save_note()
-        task = self._task(self.selected_task_id())
+        several = [task for task in map(self._task, self.selected_task_ids()) if task]
+        task = several[0] if len(several) == 1 else None
         self.note_text.configure(state="normal")
         self.note_text.delete("1.0", "end")
+        self.move_button.configure(
+            state="normal" if several else "disabled",
+            text=f"Move {len(several)} tasks to stage" if len(several) > 1 else "Move to stage",
+        )
+        if len(several) > 1:
+            self._note_task = None
+            self.detail_title.set(f"{len(several)} tasks selected")
+            projects = sorted({t.project for t in several})
+            stages = sorted({t.stage for t in several})
+            self.detail_meta.set(
+                f"Project:  {', '.join(projects)}\nStage:  {', '.join(stages)}\n\n"
+                "Move them all to one stage with the button below."
+            )
+            self.note_text.configure(state="disabled")
+            self.pin_button.configure(state="disabled", text="Pin")
+            self.open_button.configure(state="disabled")
+            self.view_button.configure(state="disabled")
+            self.today_button.configure(state="disabled", text="Today")
+            return
         if task is None:
             self._note_task = None
             self.detail_title.set("Select a task")

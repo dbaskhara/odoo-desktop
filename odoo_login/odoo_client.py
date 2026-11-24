@@ -651,6 +651,11 @@ class OdooClient:
     def set_stage(self, session, task_id, stage_id):
         return self.call_model(session, "project.task", "write", [[int(task_id)], {"stage_id": int(stage_id)}])
 
+    def set_stage_many(self, session, task_ids, stage_id):
+        """Move several tasks of one project to the same stage in a single write."""
+        ids = [int(task_id) for task_id in task_ids]
+        return self.call_model(session, "project.task", "write", [ids, {"stage_id": int(stage_id)}])
+
     def post_message(self, session, task_id, text):
         """Post a comment in the task's chatter (followers are notified by Odoo)."""
         text = (text or "").strip()

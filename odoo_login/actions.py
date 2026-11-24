@@ -221,6 +221,62 @@ class ActionsMixin:
         self._set_status(f"Moved to {stage_name}.")
         self.refresh()
 
+    # Focus: move the selected tasks ------------------------------------------
+
+    def shared_stages(self, tasks):
+        """Stage names that exist in the project of every task, and their ids per project."""
+        by_project = {}
+        for project_id in sorted({task.project_id for task in tasks}):
+            stages = self.client.fetch_stages(self.session, project_id) if project_id else ()
+            by_project[project_id] = {name: stage_id for stage_id, name in stages}
+        names = None
+        for stages in by_project.values():
+            names = list(stages) if names is None else [name for name in names if name in stages]
+        return names or [], by_project
+
+    def move_selected_clicked(self):
+        tasks = [task for task in map(self._task, self.selected_task_ids()) if task]
+        if not tasks:
+            return
+        ok, found = self._busy(lambda: self.shared_stages(tasks))
+        if not ok:
+            return
+        names, by_project = found
+        if not names:
+            self._error(
+                "These tasks are in projects that have no stage in common.\n\nSelect tasks of one project."
+                if len(by_project) > 1
+                else "No stage was found for this project."
+            )
+            return
+        count = len(tasks)
+        label = f"{count} tasks" if count > 1 else f"“{tasks[0].name}”"
+        current = tasks[0].stage if len({task.stage for task in tasks}) == 1 else ""
+        answer = self._form(
+            f"Move {label}",
+            [("stage", f"New stage in Odoo for {label}", "combo", current if current in names else names[0], names)],
+            ok_text=f"Move {count} tasks" if count > 1 else "Move",
+        )
+        if answer and answer.get("stage"):
+            self._busy(lambda: self.do_move_tasks(tasks, answer["stage"], by_project))
+
+    def do_move_tasks(self, tasks, stage_name, by_project):
+        """One write per project. Tasks already in that stage are left alone."""
+        groups = {}
+        for task in tasks:
+            if task.stage != stage_name:
+                groups.setdefault(task.project_id, []).append(task.id)
+        moved = 0
+        for project_id, ids in groups.items():
+            stage_id = by_project.get(project_id, {}).get(stage_name)
+            if stage_id is None:
+                raise OdooConnectionError("That stage does not exist in this project.")
+            self.client.set_stage_many(self.session, ids, stage_id)
+            moved += len(ids)
+        self._set_status(f"Moved {moved} task(s) to {stage_name}." if moved else f"Already in {stage_name}.")
+        self.refresh()
+        return moved
+
     # Reply -------------------------------------------------------------------
 
     def send_reply_clicked(self):

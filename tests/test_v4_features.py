@@ -41,6 +41,8 @@ class WriteCallsTests(unittest.TestCase):
     @patch("odoo_login.odoo_client.urlopen")
     def test_set_stage_writes_only_the_stage(self, urlopen):
         urlopen.return_value.__enter__.return_value.read.return_value = _reply(True)
+        self.client.set_stage_many(self.session, [55, 56], 12)
+        self.assertEqual(_args(urlopen)[3:], ["project.task", "write", [[55, 56], {"stage_id": 12}], {}])
         self.client.set_stage(self.session, 55, 12)
         self.assertEqual(_args(urlopen)[3:], ["project.task", "write", [[55], {"stage_id": 12}], {}])
 
@@ -229,6 +231,14 @@ class FakeClient:
         self.calls.append(("set_stage", task_id, stage_id))
         self.stage = {10: "In Progress", 11: "In Review", 12: "Done"}[stage_id]
 
+    def set_stage_many(self, _session, task_ids, stage_id):
+        self.calls.append(("set_stage_many", list(task_ids), stage_id))
+
+    def fetch_stages(self, _session, project_id):
+        if project_id == 1:
+            return ((10, "In Progress"), (11, "In Review"), (12, "Done"))
+        return ((20, "Ready"), (21, "In Review"), (22, "Done"))
+
     def post_message(self, _session, task_id, text):
         self.calls.append(("post_message", task_id, text))
 
@@ -292,6 +302,29 @@ class DashboardV4Tests(unittest.TestCase):
         )
         with self.assertRaisesRegex(OdooConnectionError, "does not exist"):
             self.view.do_set_stage("Nowhere")
+
+    def test_several_tasks_selected_in_focus_move_to_one_stage(self):
+        tree = self.view.focus_tree
+        tree.selection_set(("10", "11", "12"))
+        self.view._show_detail()
+        self.assertEqual(self.view.selected_task_ids(), [10, 11, 12])
+        self.assertIsNone(self.view.selected_task_id())
+        self.assertEqual(self.view.detail_title.get(), "3 tasks selected")
+        self.assertEqual(self.view.move_button.cget("text"), "Move 3 tasks to stage")
+
+        tasks = [self.view._task(i) for i in (10, 11, 12)]
+        names, by_project = self.view.shared_stages(tasks)
+        self.assertEqual(names, ["In Review", "Done"])  # only stages both projects have
+        # Task 12 is already In Review: it is left alone. Each project gets its own stage id.
+        self.assertEqual(self.view.do_move_tasks(tasks, "In Review", by_project), 2)
+        self.assertEqual(self.client.calls, [("set_stage_many", [10, 11], 11)])
+        self.assertEqual(self.view.do_move_tasks(tasks, "Done", by_project), 3)
+        self.assertEqual(self.client.calls[1:], [("set_stage_many", [10, 11], 12), ("set_stage_many", [12], 22)])
+
+        tree.selection_set(("11",))
+        self.view._show_detail()
+        self.assertEqual(self.view.selected_task_id(), 11)
+        self.assertEqual(self.view.move_button.cget("text"), "Move to stage")
 
     def test_attachments_are_listed_and_saved_with_a_safe_name(self):
         self.view.open_task_sync(10)
