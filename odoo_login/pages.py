@@ -64,6 +64,7 @@ class PagesMixin:
             self._background("projects", lambda: self.client.fetch_projects(self.session))
         elif key == "summary":
             self.load_summary()
+        self._on_show_odoo(key)
 
     def _render_extra(self):
         self._render_today()
@@ -73,6 +74,7 @@ class PagesMixin:
             self._render_mentions()
         if self.team_tasks:
             self._render_team()
+        self._render_odoo()
 
     def nav_clicked(self, key):
         if key == "focus" and self.day_filter:
@@ -106,7 +108,7 @@ class PagesMixin:
         elif kind == "side_error":
             self._set_status(payload, error=True)
         else:
-            return False
+            return self._handle_odoo_result(kind, payload)
         return True
 
     # New version notice -------------------------------------------------------
@@ -358,6 +360,7 @@ class PagesMixin:
         else:
             self.cal_year, self.cal_month = insights.shift_month(self.cal_year, self.cal_month, delta)
         self._render_calendar()
+        self._load_meetings()
 
     def _render_calendar(self):
         today = self._today()
@@ -378,7 +381,17 @@ class PagesMixin:
                 font=(theme.FONT_BOLD if day == today else theme.FONT, 9),
             ).pack(fill="x", padx=8, pady=(5, 1))  # fmt: skip
             tasks = by_day.get(day.isoformat(), [])
-            shown = tasks if len(tasks) <= 3 else tasks[:2]
+            meetings = self.meetings_on(day)
+            room = 3 if len(tasks) + len(meetings) <= 3 else 2
+            listed = meetings[:room]
+            for meeting in listed:
+                label = tk.Label(
+                    cell, text=(meeting.time + "  " if meeting.time else "") + meeting.name, bg=bg, fg=theme.PURPLE,
+                    font=(theme.FONT, 8), anchor="w", cursor="hand2",
+                )  # fmt: skip
+                label.pack(fill="x", padx=8)
+                label.bind("<Button-1>", lambda _e, i=meeting.id: self.open_record("calendar.event", i))
+            shown = tasks[: room - len(listed)]
             for task in shown:
                 label = tk.Label(
                     cell, text=task.name, bg=bg, fg=_bucket_color(insights.bucket_of(task, today)) if day <= today else theme.MUTED,
@@ -386,9 +399,10 @@ class PagesMixin:
                 )  # fmt: skip
                 label.pack(fill="x", padx=8)
                 label.bind("<Button-1>", lambda _e, i=task.id: self.open_task(i))
-            if len(tasks) > len(shown):
+            hidden = len(tasks) + len(meetings) - len(shown) - len(listed)
+            if hidden > 0:
                 more = tk.Label(
-                    cell, text=f"+{len(tasks) - len(shown)} more", bg=bg, fg=theme.ACCENT, font=(theme.FONT, 8), anchor="w", cursor="hand2"
+                    cell, text=f"+{hidden} more", bg=bg, fg=theme.ACCENT, font=(theme.FONT, 8), anchor="w", cursor="hand2"
                 )
                 more.pack(fill="x", padx=8)
                 more.bind("<Button-1>", lambda _e, d=day.isoformat(): self.show_day(d))

@@ -11,6 +11,7 @@ from tkinter import filedialog, ttk
 from . import insights, richtext, settings, theme, updates
 from .actions import ActionsMixin, human_size
 from .odoo_client import OdooConnectionError
+from .odoo_pages import OdooPagesMixin
 from .pages import PagesMixin
 from .store import LocalStore
 from .theme import Card, PillButton
@@ -22,11 +23,15 @@ NAV = (
     ("today", "Today"),
     ("focus", "Focus"),
     ("calendar", "Calendar"),
+    ("activities", "Activities"),
     ("mentions", "Mentions"),
+    ("discuss", "Discuss"),
     ("changes", "What changed"),
     ("projects", "Project health"),
     ("team", "Team"),
+    ("timesheets", "Timesheets"),
     ("summary", "Weekly summary"),
+    ("more", "More from Odoo"),
     ("settings", "Settings"),
 )
 
@@ -53,7 +58,7 @@ def status_colors():
 NAV_ICONS = {"projects": "health", "calendar": "calendar_page"}
 
 
-class DashboardView(ActionsMixin, PagesMixin):
+class DashboardView(ActionsMixin, PagesMixin, OdooPagesMixin):
     def __init__(
         self, root, client, session, email, on_sign_out=None, store=None, notifier=None, on_overdue=None,
         update_checker=None,
@@ -89,6 +94,7 @@ class DashboardView(ActionsMixin, PagesMixin):
         self._detail_id = None
         self._task_back = "focus"
         self._init_pages_state()
+        self._init_odoo_state()
 
         self._build_ui()
         self.root.after(100, self._poll_results)
@@ -123,7 +129,9 @@ class DashboardView(ActionsMixin, PagesMixin):
         self._build_focus_page(self.pages["focus"])
         self._build_changes_page(self.pages["changes"])
         self._build_projects_page(self.pages["projects"])
-        for key in ("today", "calendar", "mentions", "team", "summary", "settings"):
+        for key in (
+            "today", "calendar", "mentions", "team", "summary", "settings", "activities", "timesheets", "discuss", "more",
+        ):  # fmt: skip
             getattr(self, f"_build_{key}_page")(self.pages[key])
         self.show_tab(self.current_tab)
 
@@ -155,7 +163,7 @@ class DashboardView(ActionsMixin, PagesMixin):
             pill = tk.Frame(row, bg=theme.SIDEBAR)
             pill.pack(side="left", fill="x", expand=True, padx=(9, 0))
             icon = theme.icon_label(pill, NAV_ICONS.get(key, key), theme.SIDEBAR)
-            icon.pack(side="left", padx=(10, 10), pady=7)
+            icon.pack(side="left", padx=(10, 10), pady=5)
             text = tk.Label(pill, textvariable=var, bg=theme.SIDEBAR, fg=theme.MUTED, font=(theme.FONT, 10))
             text.pack(side="left")
             for widget in (row, pill, icon, text):
@@ -724,6 +732,7 @@ class DashboardView(ActionsMixin, PagesMixin):
                 self._fill_task_text([("error", payload[1]), ("muted", "You can still try Open in Odoo.")])
         elif kind == "tasks":
             self.apply_tasks(payload)
+            self._odoo_after_load()
         elif kind == "error":
             self._set_status(payload, error=True)
         else:

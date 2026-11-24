@@ -5,7 +5,8 @@ from tkinter import ttk
 
 from . import settings, theme, updates, winshell
 from .dashboard import DashboardView
-from .odoo_client import OdooClient, OdooConnectionError, OdooSession
+from .odoo_client import OdooConnectionError, OdooSession
+from .odoo_extra import OdooClient
 from .theme import Card, PillButton
 
 APP_NAME = "Odoo Desktop"
@@ -13,7 +14,7 @@ APP_VERSION = updates.VERSION
 LOGIN_SIZE = "1000x800"
 LOGIN_MIN = (880, 780)
 DASHBOARD_SIZE = "1320x820"
-DASHBOARD_MIN = (1200, 700)
+DASHBOARD_MIN = (1200, 760)
 
 
 class Field:
@@ -216,6 +217,7 @@ class LoginWindow:
 
         card = Card(area, padding=(34, 30), radius=18)
         card.place(relx=0.5, rely=0.5, anchor="center")
+        self.card = card
         form = card.body
         tk.Frame(form, bg=theme.SURFACE, width=400, height=1).pack()
 
@@ -290,6 +292,20 @@ class LoginWindow:
             self.help_label.pack_forget()
         else:
             self.help_label.pack(fill="x", pady=(0, 14), before=self.login_button)
+        self._refit()
+
+    def _refit(self):
+        """Grow or shrink the card with its content, and the window if the card no longer fits.
+
+        Without this the card keeps its first height: a message shown later
+        squeezes the Sign in button, or pushes it out of the card.
+        """
+        self.card.refit()
+        self.root.update_idletasks()
+        needed = self.card.winfo_reqheight() + 48
+        if self._active and needed > self.root.winfo_height():
+            height = min(needed, self.root.winfo_screenheight() - 80)
+            self.root.geometry(f"{self.root.winfo_width()}x{height}")
 
     def _focus_first_empty(self):
         for field in (self.url_field, self.email_field, self.api_key_field):
@@ -429,6 +445,7 @@ class LoginWindow:
             self.banner.pack(fill="x", pady=(0, 14), before=self.login_button)
         elif not text:
             self.banner.pack_forget()
+        self._refit()
 
 
 def run():

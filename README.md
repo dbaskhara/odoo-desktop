@@ -26,12 +26,16 @@ The app loads every task assigned to you, across all projects, and refreshes eve
 - **Overview** — counters, quick actions and the tasks that need attention now. **New task** creates a task assigned to you in a project you choose.
 - **Today** — your plan for the day. Add tasks from the suggestions, from Focus or from a task page, tick them off, and what is left is carried over to the next day. Stored on this computer only.
 - **Focus** — one list for all projects, grouped by urgency. Search, filter by project, pinned, untouched or done; export to CSV. Select several tasks with Ctrl or Shift and click **Move to stage** to move them all at once; with tasks of different projects, only the stages those projects have in common are offered.
-- **Calendar** — deadlines on a month grid. Click a task to read it, or "+n more" to list that day in Focus.
+- **Calendar** — deadlines and your Odoo meetings (in purple, with their time) on a month grid. Click a task to read it, a meeting to open it in Odoo, or "+n more" to list that day in Focus.
+- **Activities** — everything Odoo scheduled for you on any record (calls, emails, to-dos), most urgent first. **Mark done** closes one in Odoo, with an optional note.
 - **Mentions** — messages that tagged you. Tick each one off yourself when you have dealt with it (click its status, or select several and click Mark checked); the list also shows if you already replied. Stored on this computer only.
+- **Discuss** — your channels and direct messages with their unread count. Pick one to read it and answer.
 - **What changed** — what happened to your tasks since the last time you started the app. **Mark as seen** empties the list; changes are then counted from that moment.
 - **Project health** — one bar per project, with a Late / At risk / On track label, based on your own tasks.
 - **Team** — everyone's open tasks in one project, grouped by person, most overdue first.
+- **Timesheets** — the hours you logged, per project and task, day by day, for any week.
 - **Weekly summary** — finished, moved, new, rescheduled and slipped tasks for the current week. Copy or save it as text.
+- **More from Odoo** — one list, seven views: tasks you follow or created, your tasks waiting on others, tasks waiting on you, milestones and project status, time off (balances, your leave, who is away today), helpdesk tickets, CRM pipeline.
 - **Settings** — notifications, tray, stay signed in, updates, theme, data folder.
 
 ### The task page
@@ -59,7 +63,8 @@ Once a day the app asks GitHub whether a newer release exists and shows "Version
 - **Done tasks** — a task counts as done when Odoo marks it closed, when its stage is folded in the kanban, or when the stage name contains a word like Done or Cancelled. Done tasks are hidden, never overdue and not counted; tick Show done in Focus to see them.
 - **Untouched** — days since anything changed on the task in Odoo; 7 or more counts as untouched.
 - **Local data** — pins, notes, plans, timer and history are stored per account in `%APPDATA%\OdooDesktop\data-*.json`.
-- **What Odoo needs** — replies and stage moves need write access to the task; logging time needs the Timesheets app.
+- **What Odoo needs** — replies and stage moves need write access to the task; logging time needs the Timesheets app. Timesheets, Discuss, Time off, Helpdesk and CRM only show when that Odoo app is installed; a page you have no access to says so.
+- **Discuss unread counts** — they are Odoo's own. Reading a conversation here does not mark it as read in Odoo.
 
 ## For developers
 
@@ -74,9 +79,11 @@ python -m unittest discover -s tests -v       # tests
 | Path | Content |
 |---|---|
 | `odoo_login/odoo_client.py` | JSON-RPC calls: sign-in, reading tasks, mentions, team, attachments; writing stage, message, timesheet, new task. Sends `User-Agent: OdooDesktop/1.0`: Cloudflare blocks Python's default one. |
+| `odoo_login/odoo_extra.py` | The client the app uses: the core client plus activities, timesheets, Discuss, meetings, related tasks, milestones, time off, helpdesk, CRM |
 | `odoo_login/app.py` | Sign-in screen, stay signed in, tray and window lifecycle |
 | `odoo_login/dashboard.py` | Dashboard shell: sidebar, Overview, Focus, What changed, Project health, task page |
 | `odoo_login/pages.py` | Today, Calendar, Mentions, Team, Weekly summary, Settings, notifications |
+| `odoo_login/odoo_pages.py` | Activities, Timesheets, Discuss, More from Odoo, meetings on the Calendar |
 | `odoo_login/actions.py` | Move stage, reply, timer, new task, attachments, form dialogs |
 | `odoo_login/insights.py` | Calculations: urgency groups, untouched days, changes, project health, week summary, calendar |
 | `odoo_login/richtext.py` | Turns Odoo's HTML (descriptions, messages) into readable text |

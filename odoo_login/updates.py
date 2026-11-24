@@ -12,7 +12,7 @@ import re
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-VERSION = "4.4"
+VERSION = "5.0"
 REPOSITORY = "dbaskhara/odoo-desktop"
 DOWNLOAD_PAGE = f"https://github.com/{REPOSITORY}/releases/latest"
 CHECK_EVERY_HOURS = 24

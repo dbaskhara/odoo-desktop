@@ -97,6 +97,10 @@ ICONS = {
     "timer": "",
     "send": "",
     "attach": "",
+    "activities": "",
+    "timesheets": "",
+    "discuss": "",
+    "more": "",
     "prev": "",
     "next": "",
 }
@@ -334,6 +338,11 @@ class Card(tk.Canvas):
         self._window = self.create_window(self.pad_x, self.pad_y, window=self.body, anchor="nw")
         self.body.bind("<Configure>", self._fit)
         self.bind("<Configure>", self._redraw)
+
+    def refit(self):
+        """Call after showing or hiding content in a card that is sized by its content."""
+        self.update_idletasks()
+        self._fit()
 
     def _fit(self, _event=None):
         self.configure(
