@@ -8,7 +8,7 @@ import tkinter as tk
 import webbrowser
 from tkinter import filedialog, ttk
 
-from . import insights, richtext, settings, theme
+from . import insights, richtext, settings, theme, updates
 from .actions import ActionsMixin, human_size
 from .odoo_client import OdooConnectionError
 from .pages import PagesMixin
@@ -54,7 +54,13 @@ NAV_ICONS = {"projects": "health", "calendar": "calendar_page"}
 
 
 class DashboardView(ActionsMixin, PagesMixin):
-    def __init__(self, root, client, session, email, on_sign_out=None, store=None, notifier=None, on_overdue=None):
+    def __init__(
+        self, root, client, session, email, on_sign_out=None, store=None, notifier=None, on_overdue=None,
+        update_checker=None,
+    ):  # fmt: skip
+        self.update_checker = update_checker  # callable() -> latest released version, or None: never check
+        self.new_version = ""
+        self._update_checked = None
         self.notifier = notifier  # callable(title, text) for Windows notifications
         self.on_overdue = on_overdue  # callable(overdue_count, open_count) for the tray tooltip
         self.root = root
@@ -159,10 +165,16 @@ class DashboardView(ActionsMixin, PagesMixin):
 
         foot = tk.Frame(side, bg=theme.SIDEBAR)
         foot.pack(side="bottom", fill="x", padx=18, pady=(0, 16))
+        self.update_label = tk.Label(
+            foot, bg=theme.SIDEBAR, fg=theme.WARN, font=(theme.FONT_BOLD, 9), anchor="w", cursor="hand2"
+        )
+        self.update_label.bind("<Button-1>", lambda _e: self.open_download_page())
         self.timer_var = tk.StringVar()
-        tk.Label(
+        self.timer_label = tk.Label(
             foot, textvariable=self.timer_var, bg=theme.SIDEBAR, fg=theme.ACCENT, font=(theme.FONT, 8), anchor="w"
-        ).pack(fill="x", pady=(0, 4))
+        )
+        self.timer_label.pack(fill="x", pady=(0, 4))
+        self._show_update_notice()
         self._refresh_timer_status()
         tk.Label(
             foot, text=self.email, bg=theme.SIDEBAR, fg=theme.TEXT, font=(theme.FONT_BOLD, 9), anchor="w"
@@ -734,6 +746,7 @@ class DashboardView(ActionsMixin, PagesMixin):
         self._updated_at = datetime.datetime.now().strftime("%H:%M")
         self._render_all()
         self._after_load(previous_ids)
+        self.check_for_update()
 
     def _render_all(self):
         today = self._today()

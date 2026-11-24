@@ -3,13 +3,13 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 
-from . import settings, theme, winshell
+from . import settings, theme, updates, winshell
 from .dashboard import DashboardView
 from .odoo_client import OdooClient, OdooConnectionError, OdooSession
 from .theme import Card, PillButton
 
 APP_NAME = "Odoo Desktop"
-APP_VERSION = "4.3"
+APP_VERSION = updates.VERSION
 LOGIN_SIZE = "1000x800"
 LOGIN_MIN = (880, 780)
 DASHBOARD_SIZE = "1320x820"
@@ -384,6 +384,7 @@ class LoginWindow:
             on_sign_out=self.sign_out,
             notifier=self.shell.notify if self.shell else None,
             on_overdue=self.shell.on_overdue if self.shell else None,
+            update_checker=updates.fetch_latest if self.shell else None,
         )
         if self.shell:
             self.shell.dashboard = self.dashboard

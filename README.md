@@ -32,7 +32,7 @@ The app loads every task assigned to you, across all projects, and refreshes eve
 - **Project health** — one bar per project, with a Late / At risk / On track label, based on your own tasks.
 - **Team** — everyone's open tasks in one project, grouped by person, most overdue first.
 - **Weekly summary** — finished, moved, new, rescheduled and slipped tasks for the current week. Copy or save it as text.
-- **Settings** — notifications, tray, stay signed in, theme, data folder.
+- **Settings** — notifications, tray, stay signed in, updates, theme, data folder.
 
 ### The task page
 
@@ -49,6 +49,10 @@ Every action that writes to Odoo asks for confirmation first.
 ### Notifications and tray
 
 With the options in Settings turned on, closing the window keeps the app next to the clock (right-click the icon to quit) and Windows shows a notification when a task is assigned to you, a deadline is today, or someone replies on one of your tasks.
+
+### Updates
+
+Once a day the app asks GitHub whether a newer release exists and shows "Version x.y is available" at the bottom of the menu; click it to open the download page, then replace your `OdooDesktop.exe` with the new one. Your settings and local data are kept. The app never downloads or installs anything by itself, and the check sends nothing about you or your tasks. It can be turned off in Settings.
 
 ### Good to know
 
@@ -77,6 +81,7 @@ python -m unittest discover -s tests -v       # tests
 | `odoo_login/insights.py` | Calculations: urgency groups, untouched days, changes, project health, week summary, calendar |
 | `odoo_login/richtext.py` | Turns Odoo's HTML (descriptions, messages) into readable text |
 | `odoo_login/store.py` | Local data: pins, notes, snapshot, plan, history, timer |
+| `odoo_login/updates.py` | App version and the check for a newer GitHub release |
 | `odoo_login/winshell.py` | Windows Credential Manager, tray icon and notifications (ctypes, no dependency) |
 | `odoo_login/theme.py` | Dark and light palettes, fonts, styles, rounded card and button widgets |
 | `odoo_login/settings.py` | Remembered server / database / email / theme / preferences |

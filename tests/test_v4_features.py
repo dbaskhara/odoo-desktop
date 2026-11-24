@@ -326,6 +326,45 @@ class DashboardV4Tests(unittest.TestCase):
         self.assertEqual(self.view.selected_task_id(), 11)
         self.assertEqual(self.view.move_button.cget("text"), "Move to stage")
 
+    def test_update_notice_shows_only_for_a_newer_release(self):
+        from odoo_login import updates
+
+        self.assertEqual(updates.parse("v4.10.1"), (4, 10, 1))
+        self.assertEqual(updates.parse("nightly"), ())
+        self.assertTrue(updates.is_newer("4.10", "4.9"))
+        self.assertTrue(updates.is_newer("5", "4.9.3"))
+        self.assertFalse(updates.is_newer("4.4", "4.4.0"))
+        self.assertFalse(updates.is_newer("", "4.4"))
+
+        self.assertEqual(self.view.new_version, "")  # no checker given: tests never call GitHub
+        self.assertFalse(self.view.update_label.winfo_manager())
+        self.view._update_result(updates.VERSION)
+        self.assertEqual(self.view.new_version, "")
+        self.view._update_result("99.0")
+        self.assertEqual(self.view.new_version, "99.0")
+        self.assertIn("Version 99.0 is available", self.view.update_label.cget("text"))
+        self.assertTrue(self.view.update_label.winfo_manager())
+        self.assertEqual(self.notes[-1][0], "Odoo Desktop update")
+        self.assertEqual(self.view.update_button.cget("text"), "Download 99.0")
+        self.view.rebuild()  # the notice survives a theme switch
+        self.assertTrue(self.view.update_label.winfo_manager())
+
+    @patch("odoo_login.updates.urlopen")
+    def test_latest_release_is_read_from_github(self, urlopen):
+        from odoo_login import updates
+
+        response = urlopen.return_value.__enter__.return_value
+        response.geturl.return_value = "https://github.com/dbaskhara/odoo-desktop/releases/tag/v4.7"
+        self.assertEqual(updates.fetch_latest(), "4.7")
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://github.com/dbaskhara/odoo-desktop/releases/latest")
+        self.assertEqual(request.get_method(), "HEAD")
+        self.assertIsNone(request.data)  # nothing is sent
+        response.geturl.return_value = "https://example.com/releases/tag/v9.9"  # not our repository: ignored
+        self.assertEqual(updates.fetch_latest(), "")
+        urlopen.side_effect = OSError("offline")
+        self.assertEqual(updates.fetch_latest(), "")
+
     def test_attachments_are_listed_and_saved_with_a_safe_name(self):
         self.view.open_task_sync(10)
         body = self.view.task_text.get("1.0", "end")

@@ -10,7 +10,7 @@ import tkinter as tk
 import webbrowser
 from tkinter import filedialog, ttk
 
-from . import insights, richtext, settings, theme, winshell
+from . import insights, richtext, settings, theme, updates, winshell
 from .odoo_client import OdooConnectionError
 from .theme import Card, PillButton
 
@@ -101,11 +101,69 @@ class PagesMixin:
             self._notify_replies(payload)
         elif kind == "image":
             self._show_inline_image(*payload)
+        elif kind == "update":
+            self._update_result(*payload)
         elif kind == "side_error":
             self._set_status(payload, error=True)
         else:
             return False
         return True
+
+    # New version notice -------------------------------------------------------
+
+    def check_for_update(self, manual=False):
+        """Ask GitHub for the latest release, in the background, at most once a day."""
+        checker = self.update_checker or (updates.fetch_latest if manual else None)
+        if checker is None or not (manual or settings.flag("updates")):
+            return
+        now = datetime.datetime.now()
+        if not manual and self._update_checked and now - self._update_checked < datetime.timedelta(
+            hours=updates.CHECK_EVERY_HOURS
+        ):
+            return
+        self._update_checked = now
+        if manual:
+            self.update_status.set("Checking…")
+
+        def run():
+            try:
+                latest = checker()
+            except Exception:
+                latest = ""
+            self.results.put(("update", (latest, manual)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _update_result(self, latest, manual=False):
+        if latest and updates.is_newer(latest):
+            first_time = latest != self.new_version
+            self.new_version = latest
+            self._show_update_notice()
+            if first_time and self.store.should_notify(self._today(), f"update:{latest}"):
+                self._notify("Odoo Desktop update", f"Version {latest} is available. Click the notice in the app to download it.")
+        elif manual:
+            self.update_status.set(
+                f"You have the latest version ({updates.VERSION})." if latest else "Could not reach GitHub. Try again later."
+            )
+
+    def _show_update_notice(self):
+        if self.new_version:
+            self.update_label.configure(text=f"Version {self.new_version} is available  " + chr(0x2192))
+            self.update_label.pack(fill="x", pady=(0, 6), before=self.timer_label)
+            if hasattr(self, "update_button") and self.update_button.winfo_exists():
+                self.update_status.set(f"Version {self.new_version} is available.")
+                self.update_button.configure(text=f"Download {self.new_version}")
+        else:
+            self.update_label.pack_forget()
+
+    def open_download_page(self):
+        webbrowser.open(updates.DOWNLOAD_PAGE)
+
+    def _update_button_clicked(self):
+        if self.new_version:
+            self.open_download_page()
+        else:
+            self.check_for_update(manual=True)
 
     # Notifications ------------------------------------------------------------
 
@@ -696,6 +754,22 @@ class PagesMixin:
             "Your password or API key is kept in Windows Credential Manager, not in a file. Untick to forget it.",
             command=self._stay_changed,
         )
+        section("UPDATES")
+        toggle(
+            "updates",
+            "Tell me when a new version is available",
+            "Once a day the app asks GitHub for the latest release. Nothing about you or your tasks is sent.",
+        )
+        row = tk.Frame(body, bg=theme.SURFACE)
+        row.pack(anchor="w")
+        self.update_button = PillButton(row, "Check now", self._update_button_clicked, kind="secondary")
+        self.update_button.pack(side="left")
+        self.update_status = tk.StringVar(value=f"You have version {updates.VERSION}.")
+        tk.Label(row, textvariable=self.update_status, bg=theme.SURFACE, fg=theme.MUTED, font=(theme.FONT, 9)).pack(
+            side="left", padx=(12, 0)
+        )
+        if self.new_version:
+            self._show_update_notice()
         section("APPEARANCE")
         PillButton(
             body, "Switch to light theme" if theme.MODE == "dark" else "Switch to dark theme", self.toggle_theme,
