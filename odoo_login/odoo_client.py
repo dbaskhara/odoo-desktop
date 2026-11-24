@@ -1,5 +1,6 @@
 """Odoo desktop client starter package."""
 
+import base64
 from dataclasses import dataclass
 import datetime
 import json
@@ -78,6 +79,44 @@ class TaskDetail:
     spent_hours: float = 0.0
     subtasks: tuple = ()
     messages: tuple = ()
+    project_id: int = 0
+    stage_id: int = 0
+    stages: tuple = ()  # (id, name) stages of the task's project, in kanban order
+    attachments: tuple = ()
+
+
+@dataclass(frozen=True)
+class Attachment:
+    id: int
+    name: str
+    mimetype: str = ""
+    size: int = 0
+
+
+@dataclass(frozen=True)
+class Mention:
+    id: int
+    model: str
+    res_id: int
+    record: str
+    author: str
+    date: str  # local 'YYYY-MM-DD HH:MM'
+    body: str  # HTML
+    answered: bool = False
+
+
+@dataclass(frozen=True)
+class Reply:
+    task_id: int
+    author: str
+    date: str
+    body: str
+
+
+@dataclass(frozen=True)
+class TeamTask:
+    task: TaskInfo
+    assignees: tuple = ()
 
 
 CLOSED_STATES = ("1_done", "1_canceled")
@@ -147,6 +186,7 @@ class OdooClient:
         self.timeout = timeout
         self._field_cache = {}
         self._stage_fold_cache = {}
+        self._partner_cache = {}
 
     @staticmethod
     def normalize_url(url):
@@ -361,7 +401,21 @@ class OdooClient:
                 )
             )
 
+        project_pair = record.get("project_id")
+        try:
+            attachments = self.fetch_attachments(session, int(task_id))
+        except OdooConnectionError:
+            attachments = ()
+        try:
+            stages = self.fetch_stages(session, project_pair[0]) if project_pair else ()
+        except OdooConnectionError:
+            stages = ()
+
         return TaskDetail(
+            project_id=project_pair[0] if project_pair else 0,
+            stage_id=stage_pair[0] if stage_pair else 0,
+            stages=stages,
+            attachments=attachments,
             id=record.get("id", int(task_id)),
             name=record.get("name") or "Untitled task",
             project=_name(record.get("project_id")) or "Private tasks",
@@ -383,6 +437,259 @@ class OdooClient:
             subtasks=tuple(subtasks),
             messages=tuple(messages),
         )
+
+    # Reading more ---------------------------------------------------------
+
+    def fetch_stages(self, session, project_id):
+        records = self.call_model(
+            session,
+            "project.task.type",
+            "search_read",
+            [[["project_ids", "in", [int(project_id)]]], ["name"]],
+            {"order": "sequence asc, id asc"},
+        )
+        return tuple((record["id"], record.get("name") or "") for record in records or [])
+
+    def fetch_attachments(self, session, task_id):
+        records = self.call_model(
+            session,
+            "ir.attachment",
+            "search_read",
+            [[["res_model", "=", "project.task"], ["res_id", "=", int(task_id)]], ["name", "mimetype", "file_size"]],
+            {"order": "id desc", "limit": 40},
+        )
+        return tuple(
+            Attachment(
+                id=record["id"],
+                name=record.get("name") or f"file-{record['id']}",
+                mimetype=record.get("mimetype") or "",
+                size=int(record.get("file_size") or 0),
+            )
+            for record in records or []
+        )
+
+    def download_attachment(self, session, attachment_id):
+        """File content as bytes."""
+        records = self.call_model(session, "ir.attachment", "read", [[int(attachment_id)], ["datas"]])
+        if not records or not records[0].get("datas"):
+            raise OdooConnectionError("This file is empty or can no longer be read.")
+        try:
+            return base64.b64decode(records[0]["datas"])
+        except (ValueError, TypeError) as exc:
+            raise OdooConnectionError("Odoo returned an unreadable file.") from exc
+
+    def fetch_projects(self, session):
+        records = self.call_model(
+            session, "project.project", "search_read", [[], ["name"]], {"order": "name asc", "limit": 400}
+        )
+        return tuple((record["id"], record.get("name") or "Unnamed project") for record in records or [])
+
+    def my_partner_id(self, session):
+        key = (session.base_url, session.database, session.uid)
+        if key not in self._partner_cache:
+            records = self.call_model(session, "res.users", "read", [[session.uid], ["partner_id"]])
+            pair = records[0].get("partner_id") if records else None
+            self._partner_cache[key] = pair[0] if pair else 0
+        return self._partner_cache[key]
+
+    def fetch_mentions(self, session, limit=60):
+        """Messages that tagged the signed-in user, newest first, with whether they replied since."""
+        partner = self.my_partner_id(session)
+        if not partner:
+            return ()
+        raw = self.call_model(
+            session,
+            "mail.message",
+            "search_read",
+            [
+                [
+                    ["partner_ids", "in", [partner]],
+                    ["message_type", "in", ["comment", "email"]],
+                    ["author_id", "!=", partner],
+                    ["model", "!=", False],
+                ],
+                ["model", "res_id", "record_name", "author_id", "date", "body"],
+            ],
+            {"order": "date desc, id desc", "limit": limit},
+        ) or []
+        answered_after = {}
+        task_ids = sorted({m["res_id"] for m in raw if m.get("model") == "project.task" and m.get("res_id")})
+        if task_ids:
+            try:
+                mine = self.call_model(
+                    session,
+                    "mail.message",
+                    "search_read",
+                    [
+                        [
+                            ["model", "=", "project.task"],
+                            ["res_id", "in", task_ids],
+                            ["author_id", "=", partner],
+                            ["message_type", "in", ["comment", "email"]],
+                        ],
+                        ["res_id", "date"],
+                    ],
+                    {"order": "date desc", "limit": 500},
+                ) or []
+            except OdooConnectionError:
+                mine = []
+            for message in mine:
+                key = message.get("res_id")
+                if (message.get("date") or "") > answered_after.get(key, ""):
+                    answered_after[key] = message.get("date") or ""
+        mentions = []
+        for message in raw:
+            is_task = message.get("model") == "project.task"
+            last_reply = answered_after.get(message.get("res_id"), "") if is_task else ""
+            mentions.append(
+                Mention(
+                    id=message["id"],
+                    model=message.get("model") or "",
+                    res_id=message.get("res_id") or 0,
+                    record=message.get("record_name") or "(no name)",
+                    author=_name(message.get("author_id")) or "Someone",
+                    date=to_local_datetime(message.get("date")),
+                    body=message.get("body") or "",
+                    answered=bool(last_reply) and last_reply > (message.get("date") or ""),
+                )
+            )
+        return tuple(mentions)
+
+    def fetch_new_replies(self, session, task_ids, since_utc):
+        """Comments by other people on the given tasks after `since_utc` ('YYYY-MM-DD HH:MM:SS')."""
+        if not task_ids:
+            return ()
+        partner = self.my_partner_id(session)
+        raw = self.call_model(
+            session,
+            "mail.message",
+            "search_read",
+            [
+                [
+                    ["model", "=", "project.task"],
+                    ["res_id", "in", sorted(task_ids)],
+                    ["message_type", "in", ["comment", "email"]],
+                    ["date", ">", since_utc],
+                    ["author_id", "!=", partner],
+                ],
+                ["res_id", "author_id", "date", "body"],
+            ],
+            {"order": "date asc", "limit": 20},
+        )
+        return tuple(
+            Reply(
+                task_id=message.get("res_id") or 0,
+                author=_name(message.get("author_id")) or "Someone",
+                date=to_local_datetime(message.get("date")),
+                body=message.get("body") or "",
+            )
+            for message in raw or []
+        )
+
+    def _task_info(self, record, folded):
+        project = record.get("project_id")
+        stage = record.get("stage_id")
+        return TaskInfo(
+            id=record.get("id", 0),
+            name=record.get("name") or "Untitled task",
+            project_id=project[0] if project else 0,
+            project=project[1] if project else "Private tasks",
+            stage=stage[1] if stage else "No stage",
+            deadline=to_local_date(record.get("date_deadline")),
+            updated=to_local_date(record.get("write_date")),
+            created=to_local_date(record.get("create_date")),
+            starred=str(record.get("priority") or "0") not in ("0", ""),
+            state=record.get("state") or "",
+            done=self.is_done(record.get("state") or "", stage, folded),
+        )
+
+    def fetch_team_tasks(self, session, project_id):
+        """Open tasks of everybody in one project, with assignee names."""
+        available = self.task_fields(session)
+        domain = [["project_id", "=", int(project_id)]]
+        if "state" in available:
+            domain.append(["state", "not in", list(CLOSED_STATES)])
+        elif "is_closed" in available:
+            domain.append(["is_closed", "=", False])
+        wanted = [name for name in TASK_FIELDS + ("user_ids",) if name in available]
+        records = self.call_model(
+            session, "project.task", "search_read", [domain, wanted], {"order": "id desc", "limit": 1500}
+        ) or []
+        folded = self.folded_stages(session, [r["stage_id"][0] for r in records if r.get("stage_id")])
+        user_ids = sorted({uid for record in records for uid in record.get("user_ids") or []})
+        names = {}
+        if user_ids:
+            try:
+                users = self.call_model(session, "res.users", "read", [user_ids, ["display_name"]])
+            except OdooConnectionError:
+                users = []
+            names = {user["id"]: user.get("display_name") or "" for user in users or []}
+        result = []
+        for record in records:
+            info = self._task_info(record, folded)
+            if info.done:
+                continue
+            people = tuple(names.get(uid) or f"User {uid}" for uid in record.get("user_ids") or [])
+            result.append(TeamTask(task=info, assignees=people))
+        return tuple(result)
+
+    def fetch_closed_since(self, session, since_date):
+        """My tasks that reached a finished state or stage on or after `since_date` (YYYY-MM-DD)."""
+        available = self.task_fields(session)
+        stamp = "date_last_stage_update" if "date_last_stage_update" in available else "write_date"
+        domain = [["user_ids", "in", [session.uid]], [stamp, ">=", f"{since_date} 00:00:00"]]
+        wanted = [name for name in TASK_FIELDS if name in available]
+        records = self.call_model(
+            session, "project.task", "search_read", [domain, wanted], {"order": f"{stamp} desc", "limit": 300}
+        ) or []
+        folded = self.folded_stages(session, [r["stage_id"][0] for r in records if r.get("stage_id")])
+        tasks = [self._task_info(record, folded) for record in records]
+        return tuple(task for task in tasks if task.done)
+
+    # Writing to Odoo -------------------------------------------------------
+
+    def set_stage(self, session, task_id, stage_id):
+        return self.call_model(session, "project.task", "write", [[int(task_id)], {"stage_id": int(stage_id)}])
+
+    def post_message(self, session, task_id, text):
+        """Post a comment in the task's chatter (followers are notified by Odoo)."""
+        text = (text or "").strip()
+        if not text:
+            raise OdooConnectionError("Write a message first.")
+        return self.call_model(
+            session,
+            "project.task",
+            "message_post",
+            [[int(task_id)]],
+            {"body": text, "message_type": "comment", "subtype_xmlid": "mail.mt_comment"},
+        )
+
+    def log_time(self, session, task_id, project_id, hours, description, date):
+        """Create a timesheet line on the task."""
+        if hours <= 0:
+            raise OdooConnectionError("The time to log must be more than zero.")
+        values = {
+            "task_id": int(task_id),
+            "name": (description or "").strip() or "/",
+            "unit_amount": round(float(hours), 2),
+            "date": date,
+        }
+        if project_id:
+            values["project_id"] = int(project_id)
+        return self.call_model(session, "account.analytic.line", "create", [values])
+
+    def create_task(self, session, project_id, name, deadline=""):
+        name = (name or "").strip()
+        if not name:
+            raise OdooConnectionError("Give the task a title.")
+        values = {"name": name, "project_id": int(project_id), "user_ids": [[6, 0, [session.uid]]]}
+        if deadline:
+            try:
+                values["date_deadline"] = datetime.date.fromisoformat(deadline).isoformat()
+            except ValueError as exc:
+                raise OdooConnectionError("Write the deadline as YYYY-MM-DD.") from exc
+        result = self.call_model(session, "project.task", "create", [values])
+        return result[0] if isinstance(result, list) else result
 
     def _json_rpc(self, endpoint, params):
         body = json.dumps({
@@ -429,7 +736,10 @@ class OdooClient:
                 raise OdooConnectionError(
                     "Odoo could not use that database. Check its name or enter it manually."
                 )
-            raise OdooConnectionError("Odoo rejected the request. Check the server settings.")
+            detail = " ".join(str(message).split())[:300]
+            raise OdooConnectionError(
+                f"Odoo rejected the request: {detail}" if detail else "Odoo rejected the request. Check the server settings."
+            )
         if "result" not in payload:
             raise OdooConnectionError("Odoo returned an unexpected response.")
         return payload["result"]

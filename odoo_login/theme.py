@@ -87,6 +87,18 @@ ICONS = {
     "tasks": "",
     "back": "",
     "view": "",
+    "today": "",
+    "calendar_page": "",
+    "mentions": "",
+    "team": "",
+    "summary": "",
+    "settings": "",
+    "add": "",
+    "timer": "",
+    "send": "",
+    "attach": "",
+    "prev": "",
+    "next": "",
 }
 
 

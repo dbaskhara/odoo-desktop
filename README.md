@@ -1,6 +1,6 @@
 # Odoo Desktop
 
-A small Windows app to sign in to Odoo and see your projects and the tasks assigned to you.
+A Windows app to work on your Odoo tasks without opening the browser: see what needs attention, read and move tasks, reply, log time and plan your day.
 
 ## Open the app
 
@@ -15,29 +15,51 @@ Sign in with:
 | Email | your Odoo login |
 | Password or API key | Your normal Odoo password, or an API key (Odoo → avatar → My Profile / Preferences → Account Security → New API Key). Accounts with two-step verification must use an API key: Odoo refuses the password for app connections. |
 
-Server, database, email and theme are remembered in `%APPDATA%\OdooDesktop\settings.json` (untick the box to forget them). The password or API key is never saved.
+Server, database, email and preferences are remembered in `%APPDATA%\OdooDesktop\settings.json`.
 
-## The dashboard
+**Stay signed in** keeps your password or API key in Windows Credential Manager (never in a file) and signs you in automatically next time. Signing out, or unticking it in Settings, removes it.
 
-It loads every open task assigned to you, across all projects, and refreshes every 5 minutes.
+## Pages
 
-The menu on the left switches between four pages. The sun/moon button at the bottom of the menu switches between the dark and light theme; the choice is remembered.
+The app loads every task assigned to you, across all projects, and refreshes every 5 minutes.
 
-- **Overview** — counters, quick actions and the tasks that need attention now (overdue or due within 7 days). Click a counter or a task to jump to it in Focus.
+- **Overview** — counters, quick actions and the tasks that need attention now. **New task** creates a task assigned to you in a project you choose.
+- **Today** — your plan for the day. Add tasks from the suggestions, from Focus or from a task page, tick them off, and what is left is carried over to the next day. Stored on this computer only.
+- **Focus** — one list for all projects, grouped by urgency. Search, filter by project, pinned, untouched or done; export to CSV.
+- **Calendar** — deadlines on a month grid. Click a task to read it, or "+n more" to list that day in Focus.
+- **Mentions** — messages that tagged you, and whether you replied on that task since.
+- **What changed** — what happened to your tasks since the last time you opened the app.
+- **Project health** — one bar per project, with a Late / At risk / On track label, based on your own tasks.
+- **Team** — everyone's open tasks in one project, grouped by person, most overdue first.
+- **Weekly summary** — finished, moved, new, rescheduled and slipped tasks for the current week. Copy or save it as text.
+- **Settings** — notifications, tray, stay signed in, theme, data folder.
 
-- **Focus** — one list for all projects, grouped by urgency (Overdue, Today, Next 7 days, Later, No deadline). Search, filter by project, show only pinned or untouched tasks, export the list to CSV. Double-click a task to read it in full.
-- **Done tasks** — a task counts as done when Odoo marks it closed, when its stage is folded in the kanban, or when the stage name contains a word like Done or Cancelled. Done tasks are hidden, never shown as overdue and not counted; tick Show done in Focus to see them.
-- **Full task page** — double-click a task (or select it and click View full task) to read it inside the app: description, checklists, sub-tasks, messages, assignees, tags, hours and dates. Read-only; Open in Odoo is one click away for editing.
-- **Pins and private notes** — select a task to pin it (★, shown first in its group) or write a note (✎). Both stay on this computer and are never sent to Odoo.
-- **Untouched** — how many days since anything changed on the task in Odoo; 7 days or more counts as untouched.
-- **What changed** — what happened to your tasks since the last time you opened the app: new tasks, stage moves, deadline changes, tasks closed or reassigned.
-- **Project health** — one bar per project showing how your tasks split by urgency, with a Late / At risk / On track label. Click a project to see its tasks in Focus.
+### The task page
 
-Pins, notes and the last-visit snapshot are stored per account in `%APPDATA%\OdooDesktop\data-*.json`.
+Double-click a task anywhere to read it in full: description, checklists, sub-tasks, attachments, messages and properties. From there you can:
+
+- **Move to stage** — pick a stage of the project and click Move.
+- **Reply** — write at the bottom and click Send; it is posted as a comment and Odoo notifies the followers.
+- **Timer** — Start, then Stop to log the time as a timesheet line (hours and description can be edited first). The timer survives closing the app.
+- **Today / Pin / private note** — local helpers, never sent to Odoo.
+- **Attachments** — click a file to download and open it. Small PNG and GIF pictures are shown in the page. Programs and scripts are never started: they are only shown in Explorer.
+
+Every action that writes to Odoo asks for confirmation first.
+
+### Notifications and tray
+
+With the options in Settings turned on, closing the window keeps the app next to the clock (right-click the icon to quit) and Windows shows a notification when a task is assigned to you, a deadline is today, or someone replies on one of your tasks.
+
+### Good to know
+
+- **Done tasks** — a task counts as done when Odoo marks it closed, when its stage is folded in the kanban, or when the stage name contains a word like Done or Cancelled. Done tasks are hidden, never overdue and not counted; tick Show done in Focus to see them.
+- **Untouched** — days since anything changed on the task in Odoo; 7 or more counts as untouched.
+- **Local data** — pins, notes, plans, timer and history are stored per account in `%APPDATA%\OdooDesktop\data-*.json`.
+- **What Odoo needs** — replies and stage moves need write access to the task; logging time needs the Timesheets app.
 
 ## For developers
 
-Needs Python 3.10+ with Tk. No third-party packages to run.
+Needs Python 3.10+ with Tk on Windows. No third-party packages to run.
 
 ```powershell
 python main.py                                # run from source
@@ -47,13 +69,16 @@ python -m unittest discover -s tests -v       # tests
 
 | Path | Content |
 |---|---|
-| `odoo_login/odoo_client.py` | JSON-RPC calls (login, my open tasks, full task details). Sends `User-Agent: OdooDesktop/1.0`: Cloudflare blocks Python's default one. |
-| `odoo_login/app.py` | Sign-in screen |
-| `odoo_login/dashboard.py` | Dashboard screen (sidebar, Overview, Focus, What changed, Project health) |
-| `odoo_login/insights.py` | Calculations: urgency groups, untouched days, changes, project health |
+| `odoo_login/odoo_client.py` | JSON-RPC calls: sign-in, reading tasks, mentions, team, attachments; writing stage, message, timesheet, new task. Sends `User-Agent: OdooDesktop/1.0`: Cloudflare blocks Python's default one. |
+| `odoo_login/app.py` | Sign-in screen, stay signed in, tray and window lifecycle |
+| `odoo_login/dashboard.py` | Dashboard shell: sidebar, Overview, Focus, What changed, Project health, task page |
+| `odoo_login/pages.py` | Today, Calendar, Mentions, Team, Weekly summary, Settings, notifications |
+| `odoo_login/actions.py` | Move stage, reply, timer, new task, attachments, form dialogs |
+| `odoo_login/insights.py` | Calculations: urgency groups, untouched days, changes, project health, week summary, calendar |
 | `odoo_login/richtext.py` | Turns Odoo's HTML (descriptions, messages) into readable text |
-| `odoo_login/store.py` | Pins, private notes and last-visit snapshot, saved locally |
+| `odoo_login/store.py` | Local data: pins, notes, snapshot, plan, history, timer |
+| `odoo_login/winshell.py` | Windows Credential Manager, tray icon and notifications (ctypes, no dependency) |
 | `odoo_login/theme.py` | Dark and light palettes, fonts, styles, rounded card and button widgets |
-| `odoo_login/settings.py` | Remembered server / database / email / theme |
+| `odoo_login/settings.py` | Remembered server / database / email / theme / preferences |
 | `assets/` | App icon and the Plus Jakarta Sans font (SIL Open Font License, see `assets/fonts/OFL.txt`) |
 | `OdooDesktop.spec`, `build.ps1` | Build of the exe |

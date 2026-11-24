@@ -9,7 +9,9 @@ import webbrowser
 from tkinter import filedialog, ttk
 
 from . import insights, richtext, settings, theme
+from .actions import ActionsMixin, human_size
 from .odoo_client import OdooConnectionError
+from .pages import PagesMixin
 from .store import LocalStore
 from .theme import Card, PillButton
 
@@ -17,9 +19,15 @@ ALL_PROJECTS = "All projects"
 AUTO_REFRESH_MS = 5 * 60 * 1000
 NAV = (
     ("overview", "Overview"),
+    ("today", "Today"),
     ("focus", "Focus"),
+    ("calendar", "Calendar"),
+    ("mentions", "Mentions"),
     ("changes", "What changed"),
     ("projects", "Project health"),
+    ("team", "Team"),
+    ("summary", "Weekly summary"),
+    ("settings", "Settings"),
 )
 
 
@@ -42,8 +50,13 @@ def status_colors():
     }
 
 
-class DashboardView:
-    def __init__(self, root, client, session, email, on_sign_out=None, store=None):
+NAV_ICONS = {"projects": "health", "calendar": "calendar_page"}
+
+
+class DashboardView(ActionsMixin, PagesMixin):
+    def __init__(self, root, client, session, email, on_sign_out=None, store=None, notifier=None, on_overdue=None):
+        self.notifier = notifier  # callable(title, text) for Windows notifications
+        self.on_overdue = on_overdue  # callable(overdue_count, open_count) for the tray tooltip
         self.root = root
         self.client = client
         self.session = session
@@ -69,10 +82,12 @@ class DashboardView:
         self.detail = None
         self._detail_id = None
         self._task_back = "focus"
+        self._init_pages_state()
 
         self._build_ui()
         self.root.after(100, self._poll_results)
         self.root.after(AUTO_REFRESH_MS, self._auto_refresh)
+        self.root.after(20000, self._tick_timer)
 
     # Shell --------------------------------------------------------------
 
@@ -102,6 +117,8 @@ class DashboardView:
         self._build_focus_page(self.pages["focus"])
         self._build_changes_page(self.pages["changes"])
         self._build_projects_page(self.pages["projects"])
+        for key in ("today", "calendar", "mentions", "team", "summary", "settings"):
+            getattr(self, f"_build_{key}_page")(self.pages[key])
         self.show_tab(self.current_tab)
 
     def _build_sidebar(self):
@@ -131,17 +148,22 @@ class DashboardView:
             bar.pack(side="left", fill="y", pady=6)
             pill = tk.Frame(row, bg=theme.SIDEBAR)
             pill.pack(side="left", fill="x", expand=True, padx=(9, 0))
-            icon = theme.icon_label(pill, key if key != "projects" else "health", theme.SIDEBAR)
-            icon.pack(side="left", padx=(10, 10), pady=9)
+            icon = theme.icon_label(pill, NAV_ICONS.get(key, key), theme.SIDEBAR)
+            icon.pack(side="left", padx=(10, 10), pady=7)
             text = tk.Label(pill, textvariable=var, bg=theme.SIDEBAR, fg=theme.MUTED, font=(theme.FONT, 10))
             text.pack(side="left")
             for widget in (row, pill, icon, text):
-                widget.bind("<Button-1>", lambda _e, k=key: self.show_tab(k))
+                widget.bind("<Button-1>", lambda _e, k=key: self.nav_clicked(k))
             self.nav_rows[key] = (bar, pill, icon, text)
             self.tab_text[key] = var
 
         foot = tk.Frame(side, bg=theme.SIDEBAR)
         foot.pack(side="bottom", fill="x", padx=18, pady=(0, 16))
+        self.timer_var = tk.StringVar()
+        tk.Label(
+            foot, textvariable=self.timer_var, bg=theme.SIDEBAR, fg=theme.ACCENT, font=(theme.FONT, 8), anchor="w"
+        ).pack(fill="x", pady=(0, 4))
+        self._refresh_timer_status()
         tk.Label(
             foot, text=self.email, bg=theme.SIDEBAR, fg=theme.TEXT, font=(theme.FONT_BOLD, 9), anchor="w"
         ).pack(fill="x")
@@ -176,6 +198,7 @@ class DashboardView:
             icon.configure(bg=bg, fg=theme.ACCENT if active else theme.MUTED)
             text.configure(bg=bg, fg=theme.TEXT if active else theme.MUTED, font=(theme.FONT_BOLD if active else theme.FONT, 10))
         self.pages[key].lift()
+        self._on_show(key)
 
     def _page_header(self, page, title, subtitle, action=None):
         head = tk.Frame(page, bg=theme.BG)
@@ -215,12 +238,15 @@ class DashboardView:
     # Overview page ------------------------------------------------------
 
     def _build_overview_page(self, page):
-        self._page_header(
+        head = self._page_header(
             page,
             "Overview",
             "A calm view of your Odoo work — at a glance.",
-            action=("Refresh", self.refresh, "primary", "refresh"),
+            action=("Refresh", self.refresh, "secondary", "refresh"),
         )
+        PillButton(
+            head, "New task", self.new_task_clicked, kind="primary", outer=theme.BG, icon=theme.ICONS["add"]
+        ).pack(side="right", padx=(0, 8))
         row = tk.Frame(page, bg=theme.BG)
         row.pack(fill="x")
         self.stat_vars = {}
@@ -344,10 +370,11 @@ class DashboardView:
     # Focus page ---------------------------------------------------------
 
     def _build_focus_page(self, page):
+        self.focus_sub = tk.StringVar(value="Every open task assigned to you, grouped by urgency.")
         self._page_header(
             page,
             "Focus",
-            "Every open task assigned to you, grouped by urgency.",
+            self.focus_sub,
             action=("Export CSV", self.export_csv, "secondary", "export"),
         )
         body = tk.Frame(page, bg=theme.BG)
@@ -468,12 +495,13 @@ class DashboardView:
         row.pack(fill="x")
         row.columnconfigure(0, weight=1, uniform="half")
         row.columnconfigure(1, weight=1, uniform="half")
-        self.pin_button = PillButton(row, "Pin", self.toggle_pin, kind="secondary", icon=theme.ICONS["pin"], width=10)
+        row.columnconfigure(2, weight=1, uniform="half")
+        self.pin_button = PillButton(row, "Pin", self.toggle_pin, kind="secondary", width=10)
         self.pin_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        self.open_button = PillButton(
-            row, "Odoo", self.open_selected_task, kind="secondary", icon=theme.ICONS["open"], width=10
-        )
-        self.open_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        self.today_button = PillButton(row, "Today", self.toggle_selected_today, kind="secondary", width=10)
+        self.today_button.grid(row=0, column=1, sticky="ew", padx=(2, 2))
+        self.open_button = PillButton(row, "Odoo", self.open_selected_task, kind="secondary", width=10)
+        self.open_button.grid(row=0, column=2, sticky="ew", padx=(4, 0))
         self._show_detail()
 
     # Changes page -------------------------------------------------------
@@ -593,6 +621,7 @@ class DashboardView:
         self.pinned_only.set(False)
         self.stale_only.set(False)
         self.show_done.set(False)
+        self.day_filter = None
         self.project_var.set(ALL_PROJECTS)
 
     def focus_on_project(self, name):
@@ -629,11 +658,19 @@ class DashboardView:
 
     def _worker(self):
         try:
-            self.results.put(("tasks", self.client.fetch_my_tasks(self.session)))
+            tasks = self.client.fetch_my_tasks(self.session)
+            self.results.put(("tasks", tasks))
         except OdooConnectionError as exc:
             self.results.put(("error", str(exc)))
+            return
         except Exception:
             self.results.put(("error", "Could not load tasks from Odoo."))
+            return
+        try:
+            open_ids = [task.id for task in tasks if not task.done]
+            self.results.put(("replies", self.client.fetch_new_replies(self.session, open_ids, self._replies_since)))
+        except Exception:
+            pass  # notifications are a bonus: never fail a refresh because of them
 
     def load_sync(self):
         self.apply_tasks(self.client.fetch_my_tasks(self.session))
@@ -659,21 +696,28 @@ class DashboardView:
                 self._fill_task_text([("error", payload[1]), ("muted", "You can still try Open in Odoo.")])
         elif kind == "tasks":
             self.apply_tasks(payload)
-        else:
+        elif kind == "error":
             self._set_status(payload, error=True)
+        else:
+            self._loading = was_loading
+            self._handle_side_result(kind, payload)
         self.root.after(150, self._poll_results)
 
     def apply_tasks(self, tasks):
         self._save_note()
+        previous_ids = {task.id for task in self.open_tasks} if self._loaded else None
         self.tasks = list(tasks)
         self.open_tasks = [task for task in self.tasks if not task.done]
         current = insights.snapshot(self.tasks)
         self.changes = [] if self._first_visit else insights.diff(self._baseline, current)
+        if self.store.saved_at:
+            self.store.add_history(insights.diff(self.store.snapshot, current), self._today())
         self.store.remember_snapshot(current)
         self.health = insights.project_health(self.tasks, self._today())
         self._loaded = True
         self._updated_at = datetime.datetime.now().strftime("%H:%M")
         self._render_all()
+        self._after_load(previous_ids)
 
     def _render_all(self):
         today = self._today()
@@ -693,6 +737,7 @@ class DashboardView:
         self._render_changes()
         self._render_health()
         self._render_attention()
+        self._render_extra()
         self.updated_var.set(f"{self.session.database} · updated {self._updated_at}")
         hidden = len(self.tasks) - len(self.open_tasks)
         self._set_status(
@@ -709,6 +754,8 @@ class DashboardView:
         project = self.project_var.get()
         result = []
         for task in self.tasks:
+            if self.day_filter and task.deadline != self.day_filter:
+                continue
             if task.done and not self.show_done.get():
                 continue
             if project != ALL_PROJECTS and task.project != project:
@@ -733,6 +780,11 @@ class DashboardView:
         tree.delete(*tree.get_children())
         groups = {key: [] for key, _label in insights.BUCKETS}
         self.visible_tasks = self._filtered_tasks()
+        self.focus_sub.set(
+            f"Only tasks due on {self.day_filter}. Click Focus in the menu to show all tasks again."
+            if self.day_filter
+            else "Every open task assigned to you, grouped by urgency."
+        )
         for task in self.visible_tasks:
             groups[insights.bucket_of(task, today)].append(task)
         for key, label in insights.BUCKETS:
@@ -813,6 +865,7 @@ class DashboardView:
             self.pin_button.configure(state="disabled", text="Pin")
             self.open_button.configure(state="disabled")
             self.view_button.configure(state="disabled")
+            self.today_button.configure(state="disabled", text="Today")
             return
         today = self._today()
         self._note_task = task.id
@@ -833,6 +886,9 @@ class DashboardView:
         self.pin_button.configure(state="normal", text="Unpin" if task.id in self.store.pins else "Pin")
         self.open_button.configure(state="normal")
         self.view_button.configure(state="normal")
+        self.today_button.configure(
+            state="normal", text="In today" if self.store.in_plan(today, task.id) else "Today"
+        )
 
     def _save_note(self):
         if self._note_task is None:
@@ -927,6 +983,8 @@ class DashboardView:
         )
         text.pack(side="left", fill="both", expand=True)
         theme.attach_scrollbar(text, box)
+        self._build_reply_box(card.body)
+        text.tag_configure("link", foreground=theme.ACCENT, lmargin1=14, lmargin2=30)
         text.tag_configure("section", font=(theme.FONT_BOLD, 8), foreground=theme.FAINT, spacing1=18, spacing3=10)
         text.tag_configure("first", spacing1=2)
         text.tag_configure("h", font=(theme.FONT_BOLD, 11), spacing1=8)
@@ -944,8 +1002,10 @@ class DashboardView:
         side.grid(row=0, column=1, sticky="nsew")
         self.task_props = tk.Frame(side.body, bg=theme.SURFACE)
         self.task_props.pack(fill="x")
-        tk.Frame(side.body, bg=theme.BORDER, height=1).pack(fill="x", pady=(6, 14))
-        ttk.Label(side.body, text="MY PRIVATE NOTE", style="Caps.TLabel").pack(anchor="w")
+        tk.Frame(side.body, bg=theme.BORDER, height=1).pack(fill="x", pady=(4, 12))
+        self._build_task_actions(side.body)
+        tk.Frame(side.body, bg=theme.BORDER, height=1).pack(fill="x", pady=(12, 12))
+        ttk.Label(side.body, text="MY PRIVATE NOTE (NOT SENT TO ODOO)", style="Caps.TLabel").pack(anchor="w")
         self.task_note = tk.Text(
             side.body,
             height=4,
@@ -964,11 +1024,8 @@ class DashboardView:
             padx=10,
             pady=8,
         )
-        self.task_note.pack(fill="both", expand=True, pady=(6, 6))
+        self.task_note.pack(fill="both", expand=True, pady=(6, 0))
         self.task_note.bind("<FocusOut>", lambda _e: self._save_task_note())
-        ttk.Label(
-            side.body, text="Saved on this computer only, never sent to Odoo.", style="Hint.TLabel", wraplength=252
-        ).pack(anchor="w")
 
     def open_task(self, task_id):
         """Show the in-app task page and load the task from Odoo."""
@@ -1019,6 +1076,14 @@ class DashboardView:
             if index == 0:
                 tags += ("first",)
             text.insert("end", content + "\n", tags)
+            for tag in tags:
+                if tag.startswith("att:"):
+                    attachment_id = int(tag[4:])
+                    text.tag_bind(tag, "<Button-1>", lambda _e, i=attachment_id: self.open_attachment(i))
+                    text.tag_bind(tag, "<Enter>", lambda _e: text.configure(cursor="hand2"))
+                    text.tag_bind(tag, "<Leave>", lambda _e: text.configure(cursor="arrow"))
+                    text.mark_set(f"img:{attachment_id}", "end-1c")
+                    text.mark_gravity(f"img:{attachment_id}", "left")
         text.configure(state="disabled")
         text.yview_moveto(0)
 
@@ -1038,6 +1103,12 @@ class DashboardView:
             for sub in detail.subtasks:
                 mark = "☑  " if sub.closed else "☐  "
                 lines.append(("done" if sub.closed else "li", f"{mark}{sub.name}   ·   {sub.stage}"))
+        if detail.attachments:
+            lines.append(("section", f"ATTACHMENTS   {len(detail.attachments)}"))
+            for attachment in detail.attachments:
+                lines.append(
+                    (("link", f"att:{attachment.id}"), f"{attachment.name}   ·   {human_size(attachment.size)}")
+                )
         lines.append(("section", f"MESSAGES   {len(detail.messages)}"))
         if not detail.messages:
             lines.append(("muted", "No messages on this task."))
@@ -1090,6 +1161,9 @@ class DashboardView:
         self._fill_task_text(self.task_lines(detail))
         self._render_props(self.task_properties(detail))
         self.task_pin_button.configure(text="Unpin" if detail.id in self.store.pins else "Pin")
+        self._task_images = []
+        self._refresh_task_actions()
+        self._load_inline_images(detail)
 
     def _load_task_note(self):
         self.task_note.delete("1.0", "end")

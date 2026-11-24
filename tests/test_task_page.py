@@ -88,6 +88,8 @@ class FetchTaskDetailTests(unittest.TestCase):
                 {"id": 1, "author_id": [5, "Jeff"], "date": "2026-11-21 09:30:00", "body": "<p>Please check</p>"},
                 {"id": 2, "author_id": False, "date": "2026-11-20 09:30:00", "body": ""},
             ]),
+            _reply([{"id": 90, "name": "spec.pdf", "mimetype": "application/pdf", "file_size": 2048}]),
+            _reply([{"id": 10, "name": "In Progress"}, {"id": 11, "name": "Done"}]),
             _reply([{"id": 7, "display_name": "Demi"}, {"id": 8, "display_name": "Yazid"}]),
             _reply([{"id": 3, "display_name": "Bug"}]),
         ]  # fmt: skip
@@ -108,6 +110,9 @@ class FetchTaskDetailTests(unittest.TestCase):
         self.assertEqual(read_call[3:5], ["project.task", "read"])
         self.assertNotIn("milestone_id", read_call[5][1])  # not on this server
         self.assertFalse(detail.done)
+        self.assertEqual((detail.project_id, detail.stage_id), (1, 10))
+        self.assertEqual(detail.stages, ((10, "In Progress"), (11, "Done")))
+        self.assertEqual([(f.name, f.size) for f in detail.attachments], [("spec.pdf", 2048)])
         message_call = json.loads(urlopen.call_args_list[4].args[0].data)["params"]["args"]
         self.assertEqual(message_call[3], "mail.message")
         self.assertIn(["res_id", "=", 55], message_call[5][0])

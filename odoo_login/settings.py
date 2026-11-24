@@ -5,7 +5,8 @@ import os
 from pathlib import Path
 
 LOGIN_FIELDS = ("url", "database", "email")
-FIELDS = LOGIN_FIELDS + ("theme",)
+FIELDS = LOGIN_FIELDS + ("theme", "notify", "tray", "stay")
+FLAG_DEFAULTS = {"notify": True, "tray": True, "stay": False}
 
 
 def settings_path():
@@ -53,3 +54,15 @@ def clear():
     """Forget the sign-in fields but keep the theme choice."""
     current = load()
     _write({key: value for key, value in current.items() if key not in LOGIN_FIELDS})
+
+
+def flag(name):
+    """On/off preference: notify (notifications), tray (keep running when closed), stay (stay signed in)."""
+    value = load().get(name)
+    if value in ("1", "0"):
+        return value == "1"
+    return FLAG_DEFAULTS[name]
+
+
+def set_flag(name, value):
+    save({name: "1" if value else "0"})

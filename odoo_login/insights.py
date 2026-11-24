@@ -203,3 +203,76 @@ def project_health(tasks, today):
     rank = {"Late": 0, "At risk": 1, "On track": 2}
     result.sort(key=lambda p: (rank[p.status], -p.overdue, -p.open, p.name.lower()))
     return result
+
+
+# Calendar and week helpers ----------------------------------------------
+
+
+def week_range(today):
+    """Monday and Sunday of the week containing `today`."""
+    monday = today - datetime.timedelta(days=today.weekday())
+    return monday, monday + datetime.timedelta(days=6)
+
+
+def month_grid(year, month):
+    """Six weeks of dates (Monday first) covering the given month."""
+    first = datetime.date(year, month, 1)
+    start = first - datetime.timedelta(days=first.weekday())
+    return [[start + datetime.timedelta(days=week * 7 + day) for day in range(7)] for week in range(6)]
+
+
+def tasks_by_day(tasks):
+    days = {}
+    for task in tasks:
+        if task.deadline and not getattr(task, "done", False):
+            days.setdefault(task.deadline, []).append(task)
+    return days
+
+
+def shift_month(year, month, delta):
+    index = year * 12 + (month - 1) + delta
+    return index // 12, index % 12 + 1
+
+
+def format_duration(seconds):
+    hours, rest = divmod(int(seconds), 3600)
+    return f"{hours:d}:{rest // 60:02d}"
+
+
+def week_summary(today, history, closed, open_tasks):
+    """Sections of the weekly summary as [(title, [lines])]."""
+    monday, sunday = week_range(today)
+    span = f"{monday.strftime('%d %b')} to {sunday.strftime('%d %b %Y')}"
+    entries = [e for e in history if monday.isoformat() <= str(e.get("date", "")) <= sunday.isoformat()]
+
+    def lines(kind):
+        seen, out = set(), []
+        for entry in entries:
+            if entry.get("kind") != kind:
+                continue
+            key = (entry.get("task_id"), entry.get("detail"))
+            if key in seen:
+                continue
+            seen.add(key)
+            detail = f"  ({entry['detail']})" if entry.get("detail") and kind != "new" else ""
+            out.append(f"{entry.get('name', '')}  ·  {entry.get('project', '')}{detail}")
+        return out
+
+    closed_lines = [f"{task.name}  ·  {task.project}  ·  {task.stage}" for task in closed]
+    known = {task.name for task in closed}
+    for entry in entries:
+        if entry.get("kind") == "gone" and entry.get("name") not in known:
+            known.add(entry.get("name"))
+            closed_lines.append(f"{entry.get('name', '')}  ·  {entry.get('project', '')}  ·  closed or reassigned")
+    slipped = [
+        f"{task.name}  ·  {task.project}  ·  {deadline_text(task, today)}"
+        for task in sorted(open_tasks, key=lambda t: t.deadline or "9999")
+        if bucket_of(task, today) == "overdue"
+    ]
+    return span, [
+        ("Finished this week", closed_lines),
+        ("Moved to another stage", lines("stage")),
+        ("New for you", lines("new")),
+        ("Deadline changed", lines("deadline")),
+        ("Slipped (overdue now)", slipped),
+    ]

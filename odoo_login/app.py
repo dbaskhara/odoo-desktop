@@ -3,15 +3,15 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 
-from . import settings, theme
+from . import settings, theme, winshell
 from .dashboard import DashboardView
 from .odoo_client import OdooClient, OdooConnectionError, OdooSession
 from .theme import Card, PillButton
 
 APP_NAME = "Odoo Desktop"
-APP_VERSION = "3.3"
-LOGIN_SIZE = "1000x760"
-LOGIN_MIN = (880, 740)
+APP_VERSION = "4.0"
+LOGIN_SIZE = "1000x800"
+LOGIN_MIN = (880, 780)
 DASHBOARD_SIZE = "1320x820"
 DASHBOARD_MIN = (1200, 700)
 
@@ -62,9 +62,68 @@ class Field:
         self.toggle.configure(text="Hide" if hidden else "Show")
 
 
-class LoginWindow:
+class AppShell:
+    """Tray icon, notifications and what happens when the window is closed."""
+
     def __init__(self, root):
         self.root = root
+        self.dashboard = None
+        self._told_about_tray = False
+        self.tray = winshell.TrayIcon(theme.asset_path("icon.ico"), APP_NAME)
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
+        root.after(300, self._poll_tray)
+
+    def notify(self, title, text):
+        self.tray.notify(title, text)
+
+    def on_overdue(self, overdue, open_count):
+        if overdue:
+            self.tray.set_tooltip(f"{APP_NAME}: {overdue} overdue, {open_count} open")
+        else:
+            self.tray.set_tooltip(f"{APP_NAME}: {open_count} open task(s)")
+
+    def on_close(self):
+        if self.dashboard and self.tray.available and settings.flag("tray"):
+            self.root.withdraw()
+            if not self._told_about_tray:
+                self._told_about_tray = True
+                self.tray.notify(APP_NAME, "Still running next to the clock. Right-click the icon to quit.")
+        else:
+            self.quit()
+
+    def show(self):
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def quit(self):
+        self.tray.close()
+        if self.dashboard:
+            self.dashboard.destroy()
+        self.root.destroy()
+
+    def _poll_tray(self):
+        try:
+            while True:
+                event = self.tray.events.get_nowait()
+                if event == "open":
+                    self.show()
+                elif event == "refresh" and self.dashboard:
+                    self.dashboard.refresh()
+                elif event == "quit":
+                    self.quit()
+                    return
+        except queue.Empty:
+            pass
+        self.root.after(300, self._poll_tray)
+
+
+class LoginWindow:
+    def __init__(self, root, shell=None):
+        self.root = root
+        self.shell = shell
+        if shell:
+            shell.dashboard = None
         self.root.title(APP_NAME)
         self.root.geometry(LOGIN_SIZE)
         self.root.minsize(*LOGIN_MIN)
@@ -83,12 +142,14 @@ class LoginWindow:
         self.email_var = tk.StringVar(value=saved.get("email", ""))
         self.api_key_var = tk.StringVar()
         self.remember_var = tk.BooleanVar(value=True)
+        self.stay_var = tk.BooleanVar(value=settings.flag("stay"))
         self.status_var = tk.StringVar()
         self._status_kind = "info"
 
         self._build()
         self.root.bind("<Return>", self._on_return)
         self.root.after(100, self._poll_result)
+        self.root.after(250, self._auto_sign_in)
 
     # Layout -----------------------------------------------------------
 
@@ -173,12 +234,16 @@ class LoginWindow:
         )
 
         options = ttk.Frame(form)
-        options.pack(fill="x", pady=(0, 14))
+        options.pack(fill="x", pady=(0, 6))
         ttk.Checkbutton(
             options, text="Remember server, database and email", variable=self.remember_var
         ).pack(side="left")
         ttk.Button(options, text="Password or API key?", style="Link.TButton", command=self._toggle_help).pack(
             side="right"
+        )
+
+        ttk.Checkbutton(form, text="Stay signed in on this computer", variable=self.stay_var).pack(
+            anchor="w", pady=(0, 14)
         )
 
         self.help_label = ttk.Label(
@@ -206,7 +271,7 @@ class LoginWindow:
 
         self.login_button = PillButton(form, "Sign in", self.sign_in, kind="primary", height=42)
         self.login_button.pack(fill="x")
-        ttk.Label(form, text="Your password or API key is never saved on this computer.", style="Hint.TLabel").pack(
+        ttk.Label(form, text="Your password or API key is saved only if you tick Stay signed in.", style="Hint.TLabel").pack(
             anchor="center", pady=(12, 0)
         )
         if self.status_var.get():
@@ -234,6 +299,24 @@ class LoginWindow:
         self.api_key_field.entry.focus_set()
 
     # Sign-in ------------------------------------------------------------
+
+    def _credential_target(self, url, database, email):
+        return winshell.credential_target(OdooClient.normalize_url(url), database, email)
+
+    def _auto_sign_in(self):
+        """Sign in without typing when 'Stay signed in' saved the password earlier."""
+        if not self._active or not settings.flag("stay"):
+            return
+        url, email = self.url_var.get().strip(), self.email_var.get().strip()
+        if not url or not email or self.api_key_var.get():
+            return
+        try:
+            password = winshell.load_password(self._credential_target(url, self.database_var.get(), email))
+        except OdooConnectionError:
+            return
+        if password:
+            self.api_key_var.set(password)
+            self.sign_in()
 
     def _on_return(self, _event=None):
         if self._active and str(self.login_button.cget("state")) != "disabled":
@@ -288,21 +371,48 @@ class LoginWindow:
         self._active = False
         self.api_key_var.set("")
         session = OdooSession(base_url=result.base_url, database=result.database, uid=result.uid, api_key=api_key)
+        self._remember_sign_in(result, email, api_key)
         self.root.unbind("<Return>")
         self.container.destroy()
         self.root.minsize(*DASHBOARD_MIN)
         self.root.geometry(DASHBOARD_SIZE)
-        self.dashboard = DashboardView(self.root, self.client, session, email, on_sign_out=self.sign_out)
+        self.dashboard = DashboardView(
+            self.root,
+            self.client,
+            session,
+            email,
+            on_sign_out=self.sign_out,
+            notifier=self.shell.notify if self.shell else None,
+            on_overdue=self.shell.on_overdue if self.shell else None,
+        )
+        if self.shell:
+            self.shell.dashboard = self.dashboard
         self.dashboard.refresh()
         return self.dashboard
 
+    def _remember_sign_in(self, result, email, api_key):
+        """Keep or forget the password in Windows Credential Manager, as the checkbox says."""
+        if not email or not api_key:
+            return
+        target = winshell.credential_target(result.base_url, result.database, email)
+        if self.stay_var.get():
+            settings.set_flag("stay", winshell.save_password(target, email, api_key))
+            # The saved database must match the one Odoo actually used.
+            settings.save({"database": result.database})
+        elif settings.flag("stay"):
+            winshell.delete_password(target)
+            settings.set_flag("stay", False)
+
     def sign_out(self):
         if self.dashboard:
+            session, email = self.dashboard.session, self.dashboard.email
+            winshell.delete_password(winshell.credential_target(session.base_url, session.database, email))
+            settings.set_flag("stay", False)
             self.dashboard.destroy()
             self.dashboard = None
         for widget in self.root.winfo_children():
             widget.destroy()
-        return LoginWindow(self.root)
+        return LoginWindow(self.root, shell=self.shell)
 
     def _set_status(self, text, kind="info"):
         colors = {
@@ -325,5 +435,5 @@ def run():
     root = tk.Tk()
     theme.set_window_icon(root)
     theme.load_fonts(root)
-    LoginWindow(root)
+    LoginWindow(root, shell=AppShell(root))
     root.mainloop()
