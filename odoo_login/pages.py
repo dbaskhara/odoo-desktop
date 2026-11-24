@@ -162,10 +162,7 @@ class PagesMixin:
         webbrowser.open(updates.DOWNLOAD_PAGE)
 
     def _update_button_clicked(self):
-        if self.new_version:
-            self.open_download_page()
-        else:
-            self.check_for_update(manual=True)
+        self.update_clicked()
 
     # Notifications ------------------------------------------------------------
 
@@ -204,7 +201,8 @@ class PagesMixin:
 
     def _build_today_page(self, page):
         self.today_sub = tk.StringVar(value="Pick the tasks you want to finish today.")
-        self._page_header(page, "Today", self.today_sub)
+        head = self._page_header(page, "Today", self.today_sub)
+        PillButton(head, "Plan with AI", self.ai_plan_day, kind="secondary", outer=theme.BG).pack(side="right")
         body = tk.Frame(page, bg=theme.BG)
         body.pack(fill="both", expand=True)
         body.columnconfigure(0, weight=1)
@@ -650,6 +648,9 @@ class PagesMixin:
             side="right"
         )
         PillButton(head, "Copy", self.copy_summary, kind="primary", outer=theme.BG).pack(side="right", padx=(0, 8))
+        PillButton(head, "Write with AI", self.ai_weekly_report, kind="secondary", outer=theme.BG).pack(
+            side="right", padx=(0, 8)
+        )
         card = Card(page, padding=(6, 6))
         card.pack(fill="both", expand=True)
         box = ttk.Frame(card.body)
@@ -729,7 +730,9 @@ class PagesMixin:
         self._page_header(page, "Settings", "Preferences are saved on this computer.")
         card = Card(page, padding=(22, 18))
         card.pack(fill="both", expand=True)
-        body = card.body
+        scroll = theme.Scrollable(card.body, theme.SURFACE)
+        scroll.pack(fill="both", expand=True)
+        body = scroll.inner
 
         def section(text):
             tk.Label(body, text=text, bg=theme.SURFACE, fg=theme.FAINT, font=(theme.FONT_BOLD, 8)).pack(
@@ -761,6 +764,20 @@ class PagesMixin:
             "Keep running next to the clock when I close the window",
             "The app keeps refreshing in the background. Right-click its icon to quit.",
         )
+        toggle(
+            "hotkey",
+            "Quick capture: Ctrl+Alt+N creates a task from anywhere",
+            "Works while the app runs, even hidden next to the clock. Applies the next time the app starts.",
+        )
+        self.autostart_flag = tk.BooleanVar(value=winshell.autostart_enabled())
+        ttk.Checkbutton(
+            body, text="Start with Windows, hidden next to the clock", variable=self.autostart_flag,
+            command=self._autostart_changed,
+        ).pack(anchor="w")  # fmt: skip
+        tk.Label(
+            body, text="Needs Stay signed in, otherwise the sign-in window opens at start.", bg=theme.SURFACE,
+            fg=theme.FAINT, font=(theme.FONT, 9), justify="left",
+        ).pack(anchor="w", padx=(24, 0), pady=(0, 8))  # fmt: skip
         section("SIGN-IN")
         self.stay_flag = toggle(
             "stay",
@@ -768,6 +785,7 @@ class PagesMixin:
             "Your password or API key is kept in Windows Credential Manager, not in a file. Untick to forget it.",
             command=self._stay_changed,
         )
+        self._build_ai_settings(body, section)
         section("UPDATES")
         toggle(
             "updates",
@@ -795,6 +813,14 @@ class PagesMixin:
             font=(theme.FONT, 9),
         ).pack(anchor="w", pady=(0, 8))  # fmt: skip
         PillButton(body, "Open folder", self._open_data_folder, kind="secondary").pack(anchor="w")
+
+    def _autostart_changed(self):
+        wanted = self.autostart_flag.get()
+        if winshell.set_autostart(wanted):
+            self._set_status("Odoo Desktop will start with Windows." if wanted else "Odoo Desktop no longer starts with Windows.")
+        else:
+            self.autostart_flag.set(winshell.autostart_enabled())
+            self._set_status("Windows did not let the app change this.", error=True)
 
     def _stay_changed(self, enabled):
         target = self.credential_target()

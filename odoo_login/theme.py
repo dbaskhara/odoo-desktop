@@ -101,6 +101,7 @@ ICONS = {
     "timesheets": "",
     "discuss": "",
     "more": "",
+    "search": "",
     "prev": "",
     "next": "",
 }
@@ -466,6 +467,40 @@ def logo(parent, bg, size=40):
     inset = size * 0.27
     canvas.create_oval(inset, inset, size - inset, size - inset, outline="#ffffff", width=max(2, size // 10))
     return canvas
+
+
+class Scrollable(tk.Frame):
+    """A frame that scrolls vertically when its content is taller. Put content in `.inner`."""
+
+    def __init__(self, parent, bg):
+        super().__init__(parent, bg=bg)
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        attach_scrollbar(self.canvas, self)
+        self.inner = tk.Frame(self.canvas, bg=bg)
+        self._item = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfigure(self._item, width=event.width))
+        self.canvas.bind("<Enter>", lambda _e: self.canvas.bind_all("<MouseWheel>", self._wheel))
+        self.canvas.bind("<Leave>", self._left)
+
+    def _inside(self):
+        widget = self.winfo_containing(*self.winfo_pointerxy())
+        while widget is not None:
+            if widget is self.canvas:
+                return True
+            widget = widget.master
+        return False
+
+    def _left(self, _event):
+        if not self._inside():  # moving onto a child of the canvas is not leaving
+            self.canvas.unbind_all("<MouseWheel>")
+
+    def _wheel(self, event):
+        if not self.winfo_exists() or not self._inside():
+            return
+        if self.inner.winfo_height() > self.canvas.winfo_height():
+            self.canvas.yview_scroll(int(-event.delta / 120), "units")
 
 
 def attach_scrollbar(widget, parent):

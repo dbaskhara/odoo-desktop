@@ -10,9 +10,11 @@ from tkinter import filedialog, ttk
 
 from . import insights, richtext, settings, theme, updates
 from .actions import ActionsMixin, human_size
+from .ai_pages import AIMixin
 from .odoo_client import OdooConnectionError
 from .odoo_pages import OdooPagesMixin
 from .pages import PagesMixin
+from .power import PowerMixin
 from .store import LocalStore
 from .theme import Card, PillButton
 
@@ -58,11 +60,12 @@ def status_colors():
 NAV_ICONS = {"projects": "health", "calendar": "calendar_page"}
 
 
-class DashboardView(ActionsMixin, PagesMixin, OdooPagesMixin):
+class DashboardView(ActionsMixin, PagesMixin, OdooPagesMixin, PowerMixin, AIMixin):
     def __init__(
         self, root, client, session, email, on_sign_out=None, store=None, notifier=None, on_overdue=None,
-        update_checker=None,
+        update_checker=None, on_quit=None,
     ):  # fmt: skip
+        self.on_quit = on_quit  # callable() that closes the whole app (used by the update)
         self.update_checker = update_checker  # callable() -> latest released version, or None: never check
         self.new_version = ""
         self._update_checked = None
@@ -95,8 +98,12 @@ class DashboardView(ActionsMixin, PagesMixin, OdooPagesMixin):
         self._task_back = "focus"
         self._init_pages_state()
         self._init_odoo_state()
+        self._init_power_state()
+        self._init_ai_state()
 
         self._build_ui()
+        self._bind_shortcuts()
+        self._show_cached()  # instant content while the first refresh runs, and when offline
         self.root.after(100, self._poll_results)
         self.root.after(AUTO_REFRESH_MS, self._auto_refresh)
         self.root.after(20000, self._tick_timer)
@@ -176,7 +183,7 @@ class DashboardView(ActionsMixin, PagesMixin, OdooPagesMixin):
         self.update_label = tk.Label(
             foot, bg=theme.SIDEBAR, fg=theme.WARN, font=(theme.FONT_BOLD, 9), anchor="w", cursor="hand2"
         )
-        self.update_label.bind("<Button-1>", lambda _e: self.open_download_page())
+        self.update_label.bind("<Button-1>", lambda _e: self.update_clicked())
         self.timer_var = tk.StringVar()
         self.timer_label = tk.Label(
             foot, textvariable=self.timer_var, bg=theme.SIDEBAR, fg=theme.ACCENT, font=(theme.FONT, 8), anchor="w"
@@ -201,6 +208,9 @@ class DashboardView(ActionsMixin, PagesMixin, OdooPagesMixin):
         ).pack(side="left")  # fmt: skip
         PillButton(
             tools, "", self.refresh, kind="ghost", outer=theme.SIDEBAR, icon=theme.ICONS["refresh"], width=36, height=34
+        ).pack(side="left", padx=(4, 0))
+        PillButton(
+            tools, "", self.open_search, kind="ghost", outer=theme.SIDEBAR, icon=theme.ICONS["search"], width=36, height=34
         ).pack(side="left", padx=(4, 0))
         if self.on_sign_out:
             PillButton(
@@ -267,6 +277,9 @@ class DashboardView(ActionsMixin, PagesMixin, OdooPagesMixin):
         PillButton(
             head, "New task", self.new_task_clicked, kind="primary", outer=theme.BG, icon=theme.ICONS["add"]
         ).pack(side="right", padx=(0, 8))
+        PillButton(head, "Ask AI", self.ai_question_clicked, kind="secondary", outer=theme.BG).pack(
+            side="right", padx=(0, 8)
+        )
         row = tk.Frame(page, bg=theme.BG)
         row.pack(fill="x")
         self.stat_vars = {}
@@ -294,29 +307,8 @@ class DashboardView(ActionsMixin, PagesMixin, OdooPagesMixin):
             self.stat_vars[key] = var
             card.make_clickable(command or (lambda: self.show_tab("focus")))
 
-        ttk.Label(page, text="QUICK ACTIONS", style="Section.TLabel").pack(anchor="w", pady=(22, 8))
-        actions = tk.Frame(page, bg=theme.BG)
-        actions.pack(fill="x")
         self.changes_hint = tk.StringVar(value="Since your last visit")
-        quick = (
-            ("focus", "Open Focus", "All your tasks, by urgency", lambda: self.show_tab("focus")),
-            ("changes", "See what changed", self.changes_hint, lambda: self.show_tab("changes")),
-            ("export", "Export to CSV", "Save the task list for Excel", self.export_csv),
-        )
-        for index, (icon, title, sub, command) in enumerate(quick):
-            actions.columnconfigure(index, weight=1, uniform="quick")
-            card = Card(actions, padding=(14, 12))
-            card.grid(row=0, column=index, sticky="nsew", padx=(0 if index == 0 else 12, 0))
-            tile = tk.Canvas(card.body, width=38, height=38, bg=theme.SURFACE, highlightthickness=0)
-            theme.round_rect(tile, 0, 0, 38, 38, 10, fill=theme.ACCENT_SOFT, outline=theme.ACCENT_SOFT)
-            tile.create_text(19, 20, text=theme.ICONS[icon], fill=theme.ACCENT, font=(theme.ICON_FONT, 12))
-            tile.pack(side="left")
-            texts = tk.Frame(card.body, bg=theme.SURFACE)
-            texts.pack(side="left", padx=(12, 0))
-            tk.Label(texts, text=title, bg=theme.SURFACE, fg=theme.TEXT, font=(theme.FONT_BOLD, 10)).pack(anchor="w")
-            options = {"textvariable": sub} if isinstance(sub, tk.Variable) else {"text": sub}
-            tk.Label(texts, bg=theme.SURFACE, fg=theme.MUTED, font=(theme.FONT, 9), **options).pack(anchor="w")
-            card.make_clickable(command)
+        self._build_odoo_strip(page)
 
         ttk.Label(page, text="NEEDS ATTENTION NOW", style="Section.TLabel").pack(anchor="w", pady=(22, 8))
         card = Card(page, padding=(8, 8))
@@ -734,7 +726,7 @@ class DashboardView(ActionsMixin, PagesMixin, OdooPagesMixin):
             self.apply_tasks(payload)
             self._odoo_after_load()
         elif kind == "error":
-            self._set_status(payload, error=True)
+            self._went_offline(payload)
         else:
             self._loading = was_loading
             self._handle_side_result(kind, payload)
@@ -750,6 +742,8 @@ class DashboardView(ActionsMixin, PagesMixin, OdooPagesMixin):
         if self.store.saved_at:
             self.store.add_history(insights.diff(self.store.snapshot, current), self._today())
         self.store.remember_snapshot(current)
+        self.store.save_tasks(self.tasks)
+        self.offline = False
         self.health = insights.project_health(self.tasks, self._today())
         self._loaded = True
         self._updated_at = datetime.datetime.now().strftime("%H:%M")
@@ -1005,6 +999,14 @@ class DashboardView(ActionsMixin, PagesMixin, OdooPagesMixin):
             head, "Unpin", self._toggle_detail_pin, kind="secondary", outer=theme.BG, icon=theme.ICONS["pin"]
         )
         self.task_pin_button.pack(side="right", anchor="n", padx=(0, 8), pady=(4, 0))
+        self.task_ai_button = PillButton(head, "Ask AI", self.task_ai_clicked, kind="secondary", outer=theme.BG)
+        self.task_ai_button.pack(side="right", anchor="n", padx=(0, 8), pady=(4, 0))
+        PillButton(head, "Checklist", self.checklist_clicked, kind="secondary", outer=theme.BG).pack(
+            side="right", anchor="n", padx=(0, 8), pady=(4, 0)
+        )
+        PillButton(head, "Edit", self.edit_task_clicked, kind="secondary", outer=theme.BG).pack(
+            side="right", anchor="n", padx=(0, 8), pady=(4, 0)
+        )
         titles = tk.Frame(head, bg=theme.BG)
         titles.pack(side="left", fill="x", expand=True, padx=(16, 16))
         self.task_title = tk.StringVar()

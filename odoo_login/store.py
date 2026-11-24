@@ -5,11 +5,13 @@ changes (for the weekly summary), the running timer and which notifications
 were already shown.
 """
 
+import dataclasses
 import datetime
 import hashlib
 import json
 
 from . import settings
+from .odoo_client import TaskInfo
 
 HISTORY_DAYS = 60
 PLAN_DAYS = 30
@@ -29,6 +31,8 @@ class LocalStore:
         self.timer = {}  # {task_id, name, project_id, started}
         self.notified = {}  # date -> [keys already notified]
         self.checked_mentions = set()  # message ids ticked by hand on the Mentions page
+        self.tasks_cache = []  # the tasks of the last successful refresh, for offline mode
+        self.tasks_at = ""
         self._load()
 
     def _load(self):
@@ -53,6 +57,9 @@ class LocalStore:
             self.history = [entry for entry in data["history"] if isinstance(entry, dict)]
         if isinstance(data.get("timer"), dict):
             self.timer = data["timer"]
+        if isinstance(data.get("tasks_cache"), list):
+            self.tasks_cache = [item for item in data["tasks_cache"] if isinstance(item, dict)]
+            self.tasks_at = str(data.get("tasks_at") or "")
 
     def save(self):
         data = {
@@ -66,6 +73,8 @@ class LocalStore:
             "notified": self.notified,
             "history": self.history,
             "snapshot": self.snapshot,
+            "tasks_at": self.tasks_at,
+            "tasks_cache": self.tasks_cache,
         }
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,6 +109,24 @@ class LocalStore:
         else:
             self.notes.pop(str(task_id), None)
         self.save()
+
+    # Offline copy of the tasks ---------------------------------------------
+
+    def save_tasks(self, tasks):
+        self.tasks_cache = [dataclasses.asdict(task) for task in tasks]
+        self.tasks_at = datetime.datetime.now().isoformat(timespec="minutes")
+        self.save()
+
+    def cached_tasks(self):
+        """(tasks, when they were saved). Entries a newer or older version cannot read are skipped."""
+        names = {field.name for field in dataclasses.fields(TaskInfo)}
+        tasks = []
+        for item in self.tasks_cache:
+            try:
+                tasks.append(TaskInfo(**{key: value for key, value in item.items() if key in names}))
+            except TypeError:
+                continue
+        return tasks, self.tasks_at
 
     # Mentions ticked by hand -----------------------------------------------
 

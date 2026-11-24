@@ -98,6 +98,11 @@ def delete_password(target):
 # Tray icon and balloon notifications ------------------------------------------
 
 WM_DESTROY = 0x0002
+WM_HOTKEY = 0x0312
+HOTKEY_ID = 1
+MOD_ALT, MOD_CONTROL, MOD_NOREPEAT = 0x0001, 0x0002, 0x4000
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+RUN_NAME = "OdooDesktop"
 WM_COMMAND = 0x0111
 WM_CLOSE = 0x0010
 WM_USER = 0x0400
@@ -159,7 +164,9 @@ class _WNDCLASS(ctypes.Structure):
 class TrayIcon:
     """Icon next to the clock. Events ('open', 'refresh', 'quit') arrive on `.events`."""
 
-    def __init__(self, icon_path, tooltip="Odoo Desktop"):
+    def __init__(self, icon_path, tooltip="Odoo Desktop", hotkey=False):
+        self._want_hotkey = hotkey  # Ctrl+Alt+N anywhere in Windows -> event "capture"
+        self.hotkey = False
         self.events = queue.Queue()
         self.available = False
         self._icon_path = str(icon_path)
@@ -267,6 +274,11 @@ class TrayIcon:
         if not shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(data)):
             raise OSError("Shell_NotifyIconW failed")
         self.available = True
+        if self._want_hotkey:
+            # Fails harmlessly when another program already owns the shortcut.
+            self.hotkey = bool(
+                user32.RegisterHotKey(self._hwnd, HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, ord("N"))
+            )
 
     def _window_proc(self, hwnd, message, wparam, lparam):
         user32 = self._user32
@@ -285,6 +297,9 @@ class TrayIcon:
             return 0
         if message == WAKE_MESSAGE:
             self._drain()
+            return 0
+        if message == WM_HOTKEY:
+            self.events.put("capture")
             return 0
         if message == WM_DESTROY:
             user32.PostQuitMessage(0)
@@ -327,3 +342,46 @@ class TrayIcon:
                 self._shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(data))
                 self._user32.DestroyWindow(self._hwnd)
                 return
+
+
+# Start with Windows -----------------------------------------------------------
+
+
+def autostart_command():
+    """The command Windows runs at sign-in: the app, hidden next to the clock."""
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}" --tray'
+    from pathlib import Path
+
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    main = Path(__file__).resolve().parent.parent / "main.py"
+    return f'"{pythonw}" "{main}" --tray'
+
+
+def autostart_enabled():
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            value, _kind = winreg.QueryValueEx(key, RUN_NAME)
+        return bool(value)
+    except (ImportError, OSError):
+        return False
+
+
+def set_autostart(enabled):
+    """Add or remove the app in the current user's start-up programs. Returns True when done."""
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+            if enabled:
+                winreg.SetValueEx(key, RUN_NAME, 0, winreg.REG_SZ, autostart_command())
+            else:
+                try:
+                    winreg.DeleteValue(key, RUN_NAME)
+                except FileNotFoundError:
+                    pass
+        return True
+    except (ImportError, OSError):
+        return False

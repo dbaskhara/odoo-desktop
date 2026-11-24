@@ -5,8 +5,8 @@ import os
 from pathlib import Path
 
 LOGIN_FIELDS = ("url", "database", "email")
-FIELDS = LOGIN_FIELDS + ("theme", "notify", "tray", "stay", "updates")
-FLAG_DEFAULTS = {"notify": True, "tray": True, "stay": False, "updates": True}
+FIELDS = LOGIN_FIELDS + ("theme", "notify", "tray", "stay", "updates", "hotkey", "uid", "ai_provider", "ai_model")
+FLAG_DEFAULTS = {"notify": True, "tray": True, "stay": False, "updates": True, "hotkey": True}
 
 
 def settings_path():

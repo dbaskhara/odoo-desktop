@@ -102,6 +102,7 @@ class OdooPagesMixin:
             self.load_conversations(quiet=True)
         self.meetings.pop((self.cal_year, self.cal_month), None)
         self._load_meetings()
+        self._load_today_extras()
 
     def _on_show_odoo(self, key):
         if key == "activities" and not self._activities_loaded:
@@ -155,12 +156,16 @@ class OdooPagesMixin:
         elif kind == "conversations":
             self.conversations = payload
             self._conversations_loaded = True
+            self._notify_new_messages()
             self._render_conversations()
         elif kind == "channel":
             channel_id, messages = payload
             if channel_id == self.channel_id:
                 self.channel_messages = messages
                 self._render_channel()
+                conversation = self._conversation()
+                if conversation is not None and conversation.unread and self.current_tab == "discuss":
+                    self._mark_channel_read(channel_id)
         elif kind == "more":
             key, rows = payload
             self.more_rows[key] = rows
@@ -174,7 +179,7 @@ class OdooPagesMixin:
         elif kind == "odoo_error":
             self._show_odoo_error(*payload)
         else:
-            return False
+            return self._handle_power_result(kind, payload)
         return True
 
     def _show_odoo_error(self, page, message):
@@ -262,6 +267,7 @@ class OdooPagesMixin:
             f"{len(rows)} planned for you: {late} late, {now} due today." if rows else "No activity is planned for you."
         )
         self._fill(self.activities_tree, rows)
+        self._render_odoo_strip()
 
     def _selected_activity(self):
         selection = self.activities_tree.selection()
@@ -373,9 +379,11 @@ class OdooPagesMixin:
 
     def _build_discuss_page(self, page):
         self.discuss_sub = tk.StringVar(value="Your Odoo channels and direct messages.")
-        self._page_header(
+        head = self._page_header(
             page, "Discuss", self.discuss_sub, action=("Refresh", self.load_conversations, "secondary", "refresh")
         )
+        self.discuss_ai_button = PillButton(head, "Ask AI", self.discuss_ai_clicked, kind="secondary", outer=theme.BG)
+        self.discuss_ai_button.pack(side="right", padx=(0, 8))
         body = tk.Frame(page, bg=theme.BG)
         body.pack(fill="both", expand=True)
         body.columnconfigure(1, weight=1)
@@ -444,6 +452,7 @@ class OdooPagesMixin:
             )  # fmt: skip
         if self.channel_id is not None and tree.exists(str(self.channel_id)):
             tree.selection_set(str(self.channel_id))
+        self._render_odoo_strip()
 
     def _conversation_selected(self):
         selection = self.conversations_tree.selection()
@@ -520,6 +529,8 @@ class OdooPagesMixin:
         self.more_box.pack(side="left", ipady=3)
         self.more_box.bind("<<ComboboxSelected>>", lambda _e: self._more_chosen())
         ttk.Label(tools, text="Double-click a line to open it.", style="Hint.TLabel").pack(side="left", padx=(14, 0))
+        self.more_buttons = ttk.Frame(tools)
+        self.more_buttons.pack(side="right")
         tk.Frame(card.body, bg=theme.BORDER, height=1).pack(fill="x")
         self.more_tree = self._table(card.body, [(f"c{i}", "", 150, True) for i in range(MAX_COLUMNS)])
         self.more_tree.bind("<Double-1>", lambda _e: self._open_more())
@@ -531,6 +542,7 @@ class OdooPagesMixin:
         for index, (heading, width) in enumerate(columns):
             self.more_tree.heading(f"c{index}", text=heading, anchor="w")
             self.more_tree.column(f"c{index}", width=width, anchor="w", stretch=True)
+        self._render_more_actions()
 
     def _more_chosen(self):
         key = next((spec[0] for spec in MORE if spec[1] == self.more_var.get()), None)

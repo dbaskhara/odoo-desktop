@@ -545,9 +545,31 @@ class OdooClient(_CoreClient):
                     tag="muted",
                 )  # fmt: skip
 
-        for work in (balances, mine, away):
+        def to_approve():
+            leaves = self._search(
+                session, "hr.leave",
+                [["state", "in", ["confirm", "validate1"]], ["user_id", "!=", session.uid]],
+                ["employee_id", "holiday_status_id", "request_date_from", "request_date_to", "date_from", "date_to",
+                 "number_of_days", "can_approve"],
+                order="date_from asc", limit=50,
+            )  # fmt: skip
+            for record in leaves:
+                if record.get("can_approve") is False:
+                    continue
+                start = record.get("request_date_from") or record.get("date_from")
+                end = record.get("request_date_to") or record.get("date_to")
+                dates = short_date(start, today)
+                if str(end or "")[:10] != str(start or "")[:10]:
+                    dates += "  \u2192  " + short_date(end, today)
+                detail = f"{_name(record.get('holiday_status_id'))}  \u00b7  {float(record.get('number_of_days') or 0):g} day(s)"
+                yield Row(
+                    f"w:{record['id']}", ("To approve", _name(record.get("employee_id")), detail, dates),
+                    "hr.leave", record["id"], "today",
+                )  # fmt: skip
+
+        for work in (to_approve, balances, mine, away):
             part(lambda work=work: list(work()))
-        if failures == 3 and last_error:
+        if failures == 4 and last_error:
             raise last_error
         return tuple(rows)
 
@@ -601,6 +623,183 @@ class OdooClient(_CoreClient):
                 )  # fmt: skip
             )
         return tuple(rows)
+
+    # Discuss: mark as read ---------------------------------------------------------
+
+    def mark_channel_read(self, session, channel_id):
+        """Tell Odoo I have read a conversation up to its last message. Returns True when written."""
+        partner = self.my_partner_id(session)
+        last = self.call_model(
+            session, "mail.message", "search",
+            [[["model", "=", "discuss.channel"], ["res_id", "=", int(channel_id)]]],
+            {"order": "id desc", "limit": 1},
+        )  # fmt: skip
+        members = self.call_model(
+            session, "discuss.channel.member", "search",
+            [[["channel_id", "=", int(channel_id)], ["partner_id", "=", partner]]], {"limit": 1},
+        )  # fmt: skip
+        if not last or not members:
+            return False
+        available = self.model_fields(session, "discuss.channel.member")
+        values = {}
+        for name in ("seen_message_id", "fetched_message_id"):
+            if name in available:
+                values[name] = last[0]
+        if "new_message_separator" in available:
+            values["new_message_separator"] = last[0] + 1
+        if "last_seen_dt" in available:
+            values["last_seen_dt"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        if not values:
+            return False
+        self.call_model(session, "discuss.channel.member", "write", [members, values])
+        return True
+
+    # Editing a task -------------------------------------------------------------------
+
+    def fetch_task_edit_data(self, session, task_id):
+        """Current values and the choices for the Edit task box."""
+        available = self.task_fields(session)
+        wanted = [name for name in ("date_deadline", "priority", "user_ids", "tag_ids") if name in available]
+        records = self.call_model(session, "project.task", "read", [[int(task_id)], wanted])
+        if not records:
+            raise OdooConnectionError("This task no longer exists or you may not read it.")
+        record = records[0]
+        users = self.call_model(
+            session, "res.users", "search_read", [[["share", "=", False]], ["name"]], {"order": "name asc", "limit": 400}
+        ) or []
+        try:
+            tags = self.call_model(
+                session, "project.tags", "search_read", [[], ["name"]], {"order": "name asc", "limit": 400}
+            ) or []
+        except OdooConnectionError:
+            tags = []
+        return {
+            "deadline": str(record.get("date_deadline") or "")[:10],
+            "starred": str(record.get("priority") or "0") not in ("0", ""),
+            "user_ids": list(record.get("user_ids") or []),
+            "tag_ids": list(record.get("tag_ids") or []),
+            "users": [(user["id"], user.get("name") or "") for user in users],
+            "tags": [(tag["id"], tag.get("name") or "") for tag in tags],
+        }
+
+    def update_task(self, session, task_id, deadline=None, starred=None, user_ids=None, tag_ids=None):
+        """Write only the values that are given (None = leave alone; deadline "" = remove it)."""
+        values = {}
+        if deadline is not None:
+            if deadline:
+                try:
+                    values["date_deadline"] = datetime.date.fromisoformat(deadline).isoformat()
+                except ValueError as exc:
+                    raise OdooConnectionError("Write the deadline as YYYY-MM-DD.") from exc
+            else:
+                values["date_deadline"] = False
+        if starred is not None:
+            values["priority"] = "1" if starred else "0"
+        if user_ids is not None:
+            values["user_ids"] = [[6, 0, [int(i) for i in user_ids]]]
+        if tag_ids is not None:
+            values["tag_ids"] = [[6, 0, [int(i) for i in tag_ids]]]
+        if not values:
+            return False
+        return self.call_model(session, "project.task", "write", [[int(task_id)], values])
+
+    def set_checklist(self, session, task_id, states):
+        """Tick or untick the checklist items of the description, in order.
+
+        The description is read again right before writing, and nothing is
+        written when its checklist no longer has the expected number of items.
+        """
+        from . import richtext
+
+        records = self.call_model(session, "project.task", "read", [[int(task_id)], ["description"]])
+        html = (records[0].get("description") or "") if records else ""
+        changed = richtext.set_checklist(html, list(states))
+        if changed is None:
+            raise OdooConnectionError("The description changed in Odoo. Reopen the task and try again.")
+        if changed == html:
+            return False
+        return self.call_model(session, "project.task", "write", [[int(task_id)], {"description": changed}])
+
+    def search_tasks(self, session, text, limit=15):
+        """Open tasks of anyone whose title contains `text`: (id, name, project)."""
+        text = (text or "").strip()
+        if len(text) < 3:
+            return ()
+        domain = [["name", "ilike", text]] + self._open_task_domain(session)
+        records = self.call_model(
+            session, "project.task", "search_read", [domain, ["name", "project_id"]], {"order": "id desc", "limit": limit}
+        ) or []
+        return tuple((r["id"], r.get("name") or "", _name(r.get("project_id")) or "Private tasks") for r in records)
+
+    # Time off, tickets, activities: the actions of "More from Odoo" ---------------------
+
+    def fetch_leave_types(self, session):
+        records = self._search(session, "hr.leave.type", [], ["name"], order="name asc", limit=100)
+        return tuple((record["id"], record.get("name") or "") for record in records)
+
+    def request_time_off(self, session, type_id, start, end, reason=""):
+        try:
+            first = datetime.date.fromisoformat(start)
+            last = datetime.date.fromisoformat(end or start)
+        except ValueError as exc:
+            raise OdooConnectionError("Write the dates as YYYY-MM-DD.") from exc
+        if last < first:
+            raise OdooConnectionError("The last day is before the first day.")
+        values = {
+            "holiday_status_id": int(type_id),
+            "request_date_from": first.isoformat(),
+            "request_date_to": last.isoformat(),
+        }
+        if reason.strip():
+            values["name"] = reason.strip()
+        result = self.call_model(session, "hr.leave", "create", [values])
+        return result[0] if isinstance(result, list) else result
+
+    def decide_time_off(self, session, leave_id, approve=True):
+        method = "action_approve" if approve else "action_refuse"
+        self.call_model(session, "hr.leave", method, [[int(leave_id)]])
+        return True
+
+    def fetch_ticket_stages(self, session, ticket_id):
+        records = self.call_model(session, "helpdesk.ticket", "read", [[int(ticket_id)], ["team_id"]])
+        team = records[0].get("team_id") if records else None
+        domain = [["team_ids", "in", [team[0]]]] if team else []
+        stages = self._search(session, "helpdesk.stage", domain, ["name"], order="sequence asc, id asc", limit=60)
+        return tuple((stage["id"], stage.get("name") or "") for stage in stages)
+
+    def set_ticket_stage(self, session, ticket_id, stage_id):
+        return self.call_model(session, "helpdesk.ticket", "write", [[int(ticket_id)], {"stage_id": int(stage_id)}])
+
+    def plan_activity(self, session, model, res_id, summary, date):
+        """Schedule a to-do for myself on any record."""
+        summary = (summary or "").strip()
+        if not summary:
+            raise OdooConnectionError("Say what has to be done.")
+        try:
+            day = datetime.date.fromisoformat(date).isoformat()
+        except ValueError as exc:
+            raise OdooConnectionError("Write the date as YYYY-MM-DD.") from exc
+        models = self.call_model(session, "ir.model", "search", [[["model", "=", model]]], {"limit": 1})
+        if not models:
+            raise OdooConnectionError("Odoo did not let the app plan an activity on this kind of record.")
+        values = {
+            "res_model_id": models[0],
+            "res_id": int(res_id),
+            "user_id": session.uid,
+            "summary": summary,
+            "date_deadline": day,
+        }
+        try:
+            todo = self.call_model(
+                session, "ir.model.data", "search_read",
+                [[["module", "=", "mail"], ["name", "=", "mail_activity_data_todo"]], ["res_id"]], {"limit": 1},
+            )  # fmt: skip
+            if todo:
+                values["activity_type_id"] = todo[0]["res_id"]
+        except OdooConnectionError:
+            pass  # Odoo then uses its default activity type
+        result = self.call_model(session, "mail.activity", "create", [values])
+        return result[0] if isinstance(result, list) else result
 
 
 def to_local_date_text(text):

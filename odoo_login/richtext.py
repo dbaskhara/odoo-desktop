@@ -1,5 +1,6 @@
 """Turns Odoo's HTML (task descriptions, chatter messages) into simple text blocks."""
 
+import re
 from html.parser import HTMLParser
 
 BLOCK_TAGS = {"p", "div", "section", "article", "blockquote", "table", "tr", "ul", "ol"}
@@ -76,6 +77,47 @@ class _Parser(HTMLParser):
     def handle_data(self, data):
         if not self._skip:
             self._text.append(data)
+
+
+_LIST_TAG = re.compile(r"<(/?)(ul|ol|li)\b([^>]*)>", re.IGNORECASE)
+_CLASS = re.compile(r"""class\s*=\s*(["'])(.*?)\1""", re.IGNORECASE | re.DOTALL)
+
+
+def set_checklist(html, states):
+    """Return `html` with its checklist items ticked as in `states` (list of bool, in order).
+
+    Only the class of each checklist <li> changes. Returns None when the number
+    of checklist items is not len(states): the text is then left alone.
+    """
+    pieces, position, stack, index = [], 0, [], 0
+    for match in _LIST_TAG.finditer(html or ""):
+        closing, tag, attrs = match.group(1), match.group(2).lower(), match.group(3)
+        if tag in ("ul", "ol"):
+            if closing:
+                if stack:
+                    stack.pop()
+            else:
+                found = _CLASS.search(attrs)
+                stack.append(bool(found and "o_checklist" in found.group(2)))
+            continue
+        if closing or not stack or not stack[-1]:
+            continue
+        if index >= len(states):
+            return None
+        found = _CLASS.search(attrs)
+        names = [name for name in (found.group(2).split() if found else []) if name != "o_checked"]
+        if states[index]:
+            names.append("o_checked")
+        if found:
+            new_attrs = attrs[: found.start()] + f'class="{" ".join(names)}"' + attrs[found.end():]
+        else:
+            new_attrs = attrs + (' class="o_checked"' if states[index] else "")
+        pieces.append(html[position : match.start()] + f"<li{new_attrs}>")
+        position = match.end()
+        index += 1
+    if index != len(states):
+        return None
+    return "".join(pieces) + (html or "")[position:]
 
 
 def html_to_blocks(html):

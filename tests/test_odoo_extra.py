@@ -165,18 +165,26 @@ class ExtraCallsTests(unittest.TestCase):
 
         self.answers(
             urlopen,
+            _fields("holiday_status_id", "request_date_from", "request_date_to", "number_of_days", "state",
+                    "employee_id", "can_approve"),
+            _reply([{"id": 9, "employee_id": [3, "Sam"], "holiday_status_id": [1, "Paid leave"],
+                     "request_date_from": "2026-12-10", "request_date_to": "2026-12-10", "number_of_days": 1.0,
+                     "can_approve": True},
+                    {"id": 8, "employee_id": [4, "Yazid"], "holiday_status_id": [1, "Paid leave"],
+                     "request_date_from": "2026-12-11", "request_date_to": "2026-12-11", "number_of_days": 1.0,
+                     "can_approve": False}]),
             _error("You are not allowed to access 'Time Off Type'"),
-            _fields("holiday_status_id", "request_date_from", "request_date_to", "number_of_days", "state"),
             _reply([{"id": 4, "holiday_status_id": [1, "Paid leave"], "request_date_from": "2026-12-02",
                      "request_date_to": "2026-12-04", "number_of_days": 3.0, "state": "validate"}]),
             _error("Object hr.employee.public doesn't exist"),
         )  # fmt: skip
         rows = self.client.fetch_time_off(self.session, TODAY)
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0].cells, ("My time off", "Paid leave", "3 day(s)  ·  Approved", "02 Dec  →  04 Dec"))
+        self.assertEqual(len(rows), 2)  # the request I may not approve is left out
+        self.assertEqual(rows[0].cells, ("To approve", "Sam", "Paid leave  ·  1 day(s)", "10 Dec"))
+        self.assertEqual(rows[1].cells, ("My time off", "Paid leave", "3 day(s)  ·  Approved", "02 Dec  →  04 Dec"))
 
         fresh = OdooClient(timeout=3)
-        self.answers(urlopen, _error("no hr"), _error("no hr"), _error("no hr"))
+        self.answers(urlopen, _error("no hr"), _error("no hr"), _error("no hr"), _error("no hr"))
         with self.assertRaisesRegex(OdooConnectionError, "no hr"):
             fresh.fetch_time_off(self.session, TODAY)
 

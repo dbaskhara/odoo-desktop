@@ -89,6 +89,22 @@ class ActionsMixin:
                 )
                 widget.pack(fill="x", pady=(0, 12), ipady=3)
                 readers[key] = variable.get
+            elif kind == "multi":
+                frame = tk.Frame(body, bg=theme.SURFACE)
+                frame.pack(fill="x", pady=(0, 12))
+                widget = tk.Listbox(
+                    frame, selectmode="multiple", height=min(max(len(options), 2), 7), activestyle="none",
+                    exportselection=False, relief="flat", highlightthickness=1, highlightbackground=theme.BORDER,
+                    highlightcolor=theme.ACCENT, bg=theme.SURFACE_2, fg=theme.TEXT, font=(theme.FONT, 10),
+                    selectbackground=theme.ACCENT, selectforeground=theme.ON_ACCENT, width=46,
+                )  # fmt: skip
+                for index, option in enumerate(options):
+                    widget.insert("end", option)
+                    if option in default:
+                        widget.selection_set(index)
+                widget.pack(side="left", fill="x", expand=True)
+                theme.attach_scrollbar(widget, frame)
+                readers[key] = lambda w=widget, o=list(options): [o[i] for i in w.curselection()]
             elif kind == "text":
                 widget = tk.Text(
                     body, height=4, width=46, wrap="word", relief="flat", font=(theme.FONT, 10), fg=theme.TEXT,

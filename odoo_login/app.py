@@ -1,12 +1,14 @@
 import queue
+import sys
 import threading
 import tkinter as tk
 from tkinter import ttk
 
 from . import settings, theme, updates, winshell
 from .dashboard import DashboardView
-from .odoo_client import OdooConnectionError, OdooSession
+from .odoo_client import LoginResult, OdooConnectionError, OdooSession
 from .odoo_extra import OdooClient
+from .store import LocalStore
 from .theme import Card, PillButton
 
 APP_NAME = "Odoo Desktop"
@@ -70,7 +72,8 @@ class AppShell:
         self.root = root
         self.dashboard = None
         self._told_about_tray = False
-        self.tray = winshell.TrayIcon(theme.asset_path("icon.ico"), APP_NAME)
+        self.tray = winshell.TrayIcon(theme.asset_path("icon.ico"), APP_NAME, hotkey=settings.flag("hotkey"))
+        self.login = None
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.after(300, self._poll_tray)
 
@@ -97,6 +100,29 @@ class AppShell:
         self.root.lift()
         self.root.focus_force()
 
+    def start_hidden(self):
+        """Started with Windows: stay next to the clock unless someone has to sign in."""
+        self.root.withdraw()
+        self._hidden_checks = 0
+        self.root.after(500, self._check_hidden_start)
+
+    def _check_hidden_start(self):
+        if self.dashboard:
+            return  # signed in automatically: stay hidden
+        self._hidden_checks += 1
+        login = self.login
+        signing_in = login is not None and str(login.login_button.cget("state")) == "disabled"
+        if (self._hidden_checks >= 3 and not signing_in) or self._hidden_checks > 60:
+            self.show()
+        else:
+            self.root.after(500, self._check_hidden_start)
+
+    def quick_capture(self):
+        """Ctrl+Alt+N from anywhere: bring the app up with the New task box."""
+        if self.dashboard:
+            self.show()
+            self.root.after(80, self.dashboard.new_task_clicked)
+
     def quit(self):
         self.tray.close()
         if self.dashboard:
@@ -109,6 +135,8 @@ class AppShell:
                 event = self.tray.events.get_nowait()
                 if event == "open":
                     self.show()
+                elif event == "capture":
+                    self.quick_capture()
                 elif event == "refresh" and self.dashboard:
                     self.dashboard.refresh()
                 elif event == "quit":
@@ -123,8 +151,10 @@ class LoginWindow:
     def __init__(self, root, shell=None):
         self.root = root
         self.shell = shell
+        self._from_saved_password = False
         if shell:
             shell.dashboard = None
+            shell.login = self
         self.root.title(APP_NAME)
         self.root.geometry(LOGIN_SIZE)
         self.root.minsize(*LOGIN_MIN)
@@ -332,6 +362,7 @@ class LoginWindow:
             return
         if password:
             self.api_key_var.set(password)
+            self._from_saved_password = True
             self.sign_in()
 
     def _on_return(self, _event=None):
@@ -378,8 +409,32 @@ class LoginWindow:
         if success:
             self.show_dashboard(result)
             return
+        offline = self._offline_result(result)
+        self._from_saved_password = False
+        if offline:
+            self.show_dashboard(offline)
+            return
         self._set_status(result, kind="error")
         self.root.after(100, self._poll_result)
+
+    def _offline_result(self, message):
+        """When Odoo is unreachable at start, open the tasks saved on this computer.
+
+        Only for the automatic sign-in with the password Windows kept, and only
+        for the account that signed in last time: typing a password while
+        offline never opens anything.
+        """
+        saved = settings.load()
+        email, _key = self._pending or ("", "")
+        if not self._from_saved_password or not message.startswith("Could not reach Odoo"):
+            return None
+        if not saved.get("uid", "").isdigit() or not saved.get("database") or saved.get("email") != email:
+            return None
+        result = LoginResult(
+            uid=int(saved["uid"]), database=saved["database"], base_url=OdooClient.normalize_url(self.url_var.get())
+        )
+        session = OdooSession(base_url=result.base_url, database=result.database, uid=result.uid, api_key="")
+        return result if LocalStore(session).cached_tasks()[0] else None
 
     def show_dashboard(self, result):
         email, api_key = self._pending or ("", "")
@@ -401,6 +456,7 @@ class LoginWindow:
             notifier=self.shell.notify if self.shell else None,
             on_overdue=self.shell.on_overdue if self.shell else None,
             update_checker=updates.fetch_latest if self.shell else None,
+            on_quit=self.shell.quit if self.shell else None,
         )
         if self.shell:
             self.shell.dashboard = self.dashboard
@@ -412,6 +468,7 @@ class LoginWindow:
         if not email or not api_key:
             return
         target = winshell.credential_target(result.base_url, result.database, email)
+        settings.save({"uid": str(result.uid)})  # lets the app open offline for this account
         if self.stay_var.get():
             settings.set_flag("stay", winshell.save_password(target, email, api_key))
             # The saved database must match the one Odoo actually used.
@@ -448,10 +505,31 @@ class LoginWindow:
         self._refit()
 
 
+def self_test():
+    """`OdooDesktop.exe --selftest <file>`: check that the bundled pieces load, without opening a window."""
+    lines = [f"version {APP_VERSION}"]
+    try:
+        import anthropic
+
+        lines.append(f"anthropic {anthropic.__version__}")
+        anthropic.Anthropic(api_key="not-a-key")
+        lines.append("claude client ok")
+    except Exception as exc:  # noqa: BLE001 - this is a report
+        lines.append(f"anthropic FAILED: {type(exc).__name__}: {exc}")
+    return chr(10).join(lines)
+
+
 def run():
+    if "--selftest" in sys.argv[1:-1]:
+        with open(sys.argv[-1], "w", encoding="utf-8") as handle:
+            handle.write(self_test())
+        return
     theme.enable_dpi_awareness()
     root = tk.Tk()
     theme.set_window_icon(root)
     theme.load_fonts(root)
-    LoginWindow(root, shell=AppShell(root))
+    shell = AppShell(root)
+    LoginWindow(root, shell=shell)
+    if "--tray" in sys.argv[1:]:
+        shell.start_hidden()
     root.mainloop()
