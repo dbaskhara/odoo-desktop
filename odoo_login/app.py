@@ -9,7 +9,7 @@ from .odoo_client import OdooClient, OdooConnectionError, OdooSession
 from .theme import Card, PillButton
 
 APP_NAME = "Odoo Desktop"
-APP_VERSION = "4.0"
+APP_VERSION = "4.1"
 LOGIN_SIZE = "1000x800"
 LOGIN_MIN = (880, 780)
 DASHBOARD_SIZE = "1320x820"

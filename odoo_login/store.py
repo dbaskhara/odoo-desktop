@@ -28,6 +28,7 @@ class LocalStore:
         self.history = []  # [{date, kind, task_id, name, project, detail}]
         self.timer = {}  # {task_id, name, project_id, started}
         self.notified = {}  # date -> [keys already notified]
+        self.checked_mentions = set()  # message ids ticked by hand on the Mentions page
         self._load()
 
     def _load(self):
@@ -41,6 +42,7 @@ class LocalStore:
             self.snapshot = data["snapshot"]
         self.saved_at = str(data.get("saved_at") or "")
         self.pins = {int(i) for i in data.get("pins", []) if str(i).isdigit()}
+        self.checked_mentions = {int(i) for i in data.get("checked_mentions", []) if str(i).isdigit()}
         if isinstance(data.get("notes"), dict):
             self.notes = {str(k): str(v) for k, v in data["notes"].items() if v}
         for name in ("plan", "plan_done", "notified"):
@@ -56,6 +58,7 @@ class LocalStore:
         data = {
             "saved_at": self.saved_at,
             "pins": sorted(self.pins),
+            "checked_mentions": sorted(self.checked_mentions),
             "notes": self.notes,
             "plan": self.plan,
             "plan_done": self.plan_done,
@@ -96,6 +99,19 @@ class LocalStore:
             self.notes[str(task_id)] = text
         else:
             self.notes.pop(str(task_id), None)
+        self.save()
+
+    # Mentions ticked by hand -----------------------------------------------
+
+    def mention_checked(self, message_id):
+        return int(message_id) in self.checked_mentions
+
+    def set_mentions_checked(self, message_ids, checked=True):
+        ids = {int(i) for i in message_ids}
+        if checked:
+            self.checked_mentions |= ids
+        else:
+            self.checked_mentions -= ids
         self.save()
 
     # History of changes ---------------------------------------------------

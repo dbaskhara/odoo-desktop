@@ -343,11 +343,21 @@ class DashboardV4Tests(unittest.TestCase):
                 Mention(2, "project.task", 11, "Docs", "Jeff", "2026-11-22 16:00", "<p>ping</p>", True),
             ),
         )
+        # Checked is decided by hand: a reply of mine does not tick the message.
+        self.assertEqual(self.view.tab_text["mentions"].get(), "Mentions (2)")
+        self.assertEqual(self.view.mentions_tree.get_children(), ("3", "2"))
+        self.assertEqual(self.view.mentions_tree.set("2", "status"), "To check (replied)")
+        self.view.mentions_tree.selection_set("3")
+        self.view.toggle_checked_mentions()
         self.assertEqual(self.view.tab_text["mentions"].get(), "Mentions (1)")
-        self.assertEqual(self.view.mentions_tree.get_children(), ("3",))
-        self.view.unanswered_only.set(False)
+        self.assertEqual(self.view.mentions_tree.get_children(), ("2",))
+        self.assertTrue(self.view.store.mention_checked(3))
+        self.view.unchecked_only.set(False)
         self.view._render_mentions()
         self.assertEqual(len(self.view.mentions_tree.get_children()), 2)
+        self.view.mentions_tree.selection_set("3")
+        self.view.toggle_checked_mentions()
+        self.assertEqual(self.view.tab_text["mentions"].get(), "Mentions (2)")
 
         late = TaskInfo(1, "Late", 4, "Website", "Ready", deadline="2026-11-01")
         fine = TaskInfo(2, "Fine", 4, "Website", "Ready", deadline="2026-12-20")

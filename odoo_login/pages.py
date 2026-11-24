@@ -348,7 +348,7 @@ class PagesMixin:
     # Mentions --------------------------------------------------------------------
 
     def _build_mentions_page(self, page):
-        self.mentions_sub = tk.StringVar(value="Messages that tagged you, and whether you replied since.")
+        self.mentions_sub = tk.StringVar(value="Messages that tagged you. Tick them off when you have dealt with them.")
         self._page_header(
             page, "Mentions", self.mentions_sub, action=("Refresh", self.load_mentions, "secondary", "refresh")
         )
@@ -356,15 +356,20 @@ class PagesMixin:
         card.pack(fill="both", expand=True)
         tools = ttk.Frame(card.body)
         tools.pack(fill="x", pady=(2, 8))
-        self.unanswered_only = tk.BooleanVar(value=True)
+        self.unchecked_only = tk.BooleanVar(value=True)
         ttk.Checkbutton(
-            tools, text="Only messages I have not answered", variable=self.unanswered_only, command=self._render_mentions
+            tools, text="Hide checked messages", variable=self.unchecked_only, command=self._render_mentions
         ).pack(side="left")
+        PillButton(tools, "Check all", self.check_all_mentions, kind="secondary", height=32).pack(side="right")
+        self.check_button = PillButton(tools, "Mark checked", self.toggle_checked_mentions, kind="primary", height=32)
+        self.check_button.pack(side="right", padx=(0, 8))
         box = ttk.Frame(card.body)
         box.pack(fill="both", expand=True)
-        self.mentions_tree = ttk.Treeview(box, columns=("status", "who", "where", "when", "text"), show="headings")
+        self.mentions_tree = ttk.Treeview(
+            box, columns=("status", "who", "where", "when", "text"), show="headings", selectmode="extended"
+        )
         for name, text, width, stretch in (
-            ("status", "STATUS", 90, False),
+            ("status", "STATUS", 150, False),
             ("who", "FROM", 130, False),
             ("where", "ON", 220, True),
             ("when", "WHEN", 125, False),
@@ -373,27 +378,39 @@ class PagesMixin:
             self.mentions_tree.heading(name, text=text, anchor="w")
             self.mentions_tree.column(name, width=width, anchor="w", stretch=stretch)
         self.mentions_tree.tag_configure("waiting", foreground=theme.WARN)
-        self.mentions_tree.tag_configure("answered", foreground=theme.FAINT)
+        self.mentions_tree.tag_configure("checked", foreground=theme.FAINT)
         self.mentions_tree.pack(side="left", fill="both", expand=True)
         theme.attach_scrollbar(self.mentions_tree, box)
-        self.mentions_tree.bind("<Double-1>", lambda _e: self._open_mention())
+        self.mentions_tree.bind("<Double-1>", self._mention_double_click)
+        self.mentions_tree.bind("<Button-1>", self._mention_click, add="+")
+        self.mentions_tree.bind("<<TreeviewSelect>>", lambda _e: self._update_check_button(), add="+")
+        self.mentions_tree.bind("<space>", lambda _e: self.toggle_checked_mentions())
 
     def load_mentions(self):
         self.mentions_sub.set("Loading mentions…")
         self._background("mentions", lambda: self.client.fetch_mentions(self.session))
 
+    def mention_checked(self, mention):
+        return self.store.mention_checked(mention.id)
+
     def visible_mentions(self):
-        return [m for m in self.mentions if not (self.unanswered_only.get() and m.answered)]
+        return [m for m in self.mentions if not (self.unchecked_only.get() and self.mention_checked(m))]
+
+    def _mention_status(self, mention):
+        if self.mention_checked(mention):
+            return chr(0x2713) + " Checked"
+        return "To check" + (" (replied)" if mention.answered else "")
 
     def _render_mentions(self):
         tree = self.mentions_tree
+        selected = set(tree.selection())
         tree.delete(*tree.get_children())
-        waiting = sum(1 for m in self.mentions if not m.answered)
+        waiting = sum(1 for m in self.mentions if not self.mention_checked(m))
         self.tab_text["mentions"].set(f"Mentions ({waiting})" if waiting else "Mentions")
         self.mentions_sub.set(
-            f"{waiting} message(s) tagged you without a reply from you since. Double-click to open."
+            f"{waiting} message(s) to check. Click the status to tick one off, double-click to open."
             if waiting
-            else "You have answered every message that tagged you."
+            else "You have checked every message that tagged you."
         )
         for mention in self.visible_mentions():
             text = " ".join(richtext.html_to_text(mention.body).split())
@@ -401,9 +418,56 @@ class PagesMixin:
                 "",
                 "end",
                 iid=str(mention.id),
-                values=("Answered" if mention.answered else "Waiting", mention.author, mention.record, mention.date, text[:160]),
-                tags=("answered" if mention.answered else "waiting",),
+                values=(self._mention_status(mention), mention.author, mention.record, mention.date, text[:160]),
+                tags=("checked" if self.mention_checked(mention) else "waiting",),
             )
+        tree.selection_set([iid for iid in selected if tree.exists(iid)])
+        self._update_check_button()
+
+    def _selected_mentions(self):
+        selection = set(self.mentions_tree.selection())
+        return [m for m in self.mentions if str(m.id) in selection]
+
+    def _update_check_button(self):
+        chosen = self._selected_mentions()
+        undo = bool(chosen) and all(self.mention_checked(m) for m in chosen)
+        self.check_button.configure(text="Uncheck" if undo else "Mark checked")
+
+    def toggle_checked_mentions(self):
+        """Tick the selected messages; if they are all ticked already, untick them."""
+        chosen = self._selected_mentions()
+        if not chosen:
+            self.mentions_sub.set("Select one or more messages first.")
+            return
+        undo = all(self.mention_checked(m) for m in chosen)
+        self.store.set_mentions_checked([m.id for m in chosen], not undo)
+        self._render_mentions()
+
+    def check_all_mentions(self):
+        todo = [m for m in self.mentions if not self.mention_checked(m)]
+        if not todo or not self._confirm("Check all", f"Mark {len(todo)} message(s) as checked?"):
+            return
+        self.store.set_mentions_checked([m.id for m in todo], True)
+        self._render_mentions()
+
+    def _mention_click(self, event):
+        """A click in the STATUS column ticks or unticks that message."""
+        tree = self.mentions_tree
+        row = tree.identify_row(event.y)
+        if not row or tree.identify_column(event.x) != "#1":
+            return None
+        mention = next((m for m in self.mentions if str(m.id) == row), None)
+        if mention is None:
+            return None
+        self.store.set_mentions_checked([mention.id], not self.mention_checked(mention))
+        self._render_mentions()
+        return "break"
+
+    def _mention_double_click(self, event):
+        if self.mentions_tree.identify_column(event.x) == "#1":
+            return "break"
+        self._open_mention()
+        return None
 
     def _open_mention(self):
         selection = self.mentions_tree.selection()
