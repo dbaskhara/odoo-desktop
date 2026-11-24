@@ -28,7 +28,7 @@ The app loads every task assigned to you, across all projects, and refreshes eve
 - **Focus** — one list for all projects, grouped by urgency. Search, filter by project, pinned, untouched or done; export to CSV. Select several tasks with Ctrl or Shift and click **Move to stage** to move them all at once; with tasks of different projects, only the stages those projects have in common are offered.
 - **Calendar** — deadlines on a month grid. Click a task to read it, or "+n more" to list that day in Focus.
 - **Mentions** — messages that tagged you. Tick each one off yourself when you have dealt with it (click its status, or select several and click Mark checked); the list also shows if you already replied. Stored on this computer only.
-- **What changed** — what happened to your tasks since the last time you opened the app.
+- **What changed** — what happened to your tasks since the last time you started the app. **Mark as seen** empties the list; changes are then counted from that moment.
 - **Project health** — one bar per project, with a Late / At risk / On track label, based on your own tasks.
 - **Team** — everyone's open tasks in one project, grouped by person, most overdue first.
 - **Weekly summary** — finished, moved, new, rescheduled and slipped tasks for the current week. Copy or save it as text.

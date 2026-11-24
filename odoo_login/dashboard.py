@@ -512,7 +512,9 @@ class DashboardView(ActionsMixin, PagesMixin):
 
     def _build_changes_page(self, page):
         self.changes_sub = tk.StringVar(value="What happened to your tasks since your last visit.")
-        self._page_header(page, "What changed", self.changes_sub)
+        self._page_header(
+            page, "What changed", self.changes_sub, action=("Mark as seen", self.mark_changes_seen, "secondary", "today")
+        )
         card = Card(page, padding=(16, 10))
         card.pack(fill="both", expand=True)
         box = ttk.Frame(card.body)
@@ -532,6 +534,16 @@ class DashboardView(ActionsMixin, PagesMixin):
         self.changes_tree.pack(side="left", fill="both", expand=True)
         theme.attach_scrollbar(self.changes_tree, box)
         self.changes_tree.bind("<Double-1>", lambda _e: self._view_change())
+
+    def mark_changes_seen(self):
+        """Empty the list: from now on, changes are counted from this moment."""
+        if not self._loaded:
+            return
+        self._baseline = dict(self.store.snapshot)
+        self._baseline_at = self.store.saved_at
+        self._first_visit = False
+        self.changes = []
+        self._render_all()
 
     # Projects page ------------------------------------------------------
 

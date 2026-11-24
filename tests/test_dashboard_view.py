@@ -105,6 +105,16 @@ class DashboardViewTests(unittest.TestCase):
         # A refresh in the same session keeps comparing with the previous visit.
         self.view.load_sync()
         self.assertEqual(len(self.view.changes), 3)
+        # Mark as seen empties the list; later changes are counted from that moment.
+        self.view.mark_changes_seen()
+        self.assertEqual(self.view.changes, [])
+        self.assertEqual(self.view.changes_tree.get_children(), ())
+        self.assertEqual(self.view.tab_text["changes"].get(), "What changed")
+        self.view.load_sync()
+        self.assertEqual(self.view.changes, [])
+        self.client.tasks = self.client.tasks + [TaskInfo(14, "Later", 2, "Mobile", "Ready")]
+        self.view.load_sync()
+        self.assertEqual([(c.kind, c.task_id) for c in self.view.changes], [("new", 14)])
 
     def test_done_stage_tasks_are_hidden_and_never_overdue(self):
         self.client.tasks = sample_tasks() + [
