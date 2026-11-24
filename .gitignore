@@ -1,0 +1,8 @@
+# Built app (rebuild with .\build.ps1)
+OdooDesktop.exe
+build/
+dist/
+
+# Python
+__pycache__/
+*.pyc
